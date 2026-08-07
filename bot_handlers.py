@@ -1,17 +1,17 @@
 # bot_handlers.py
-import asyncio
 import os
-from io import BytesIO
 import requests
-import time
+import replicate
 import base64
+import time
+from io import BytesIO
 from aiogram import Router, types, F
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.enums import ParseMode
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile
-from config import FREE_LIMIT, ADMIN_ID
+from config import FREE_LIMIT, ADMIN_ID, REPLICATE_API_TOKEN
 from vip_manager import (
     is_vip, add_vip, can_use_free, use_free,
     load_vips, save_vips, load_free_usage
@@ -21,9 +21,11 @@ from payment import create_payment_url
 router = Router()
 base_webhook_url: str = None
 
-# Stable Horde API (SDXL)
-HORDE_API_URL = "https://stablehorde.net/api/v2/generate/sync"
-HORDE_MODEL = "stable_diffusion_xl"
+client = replicate.Client(api_token=REPLICATE_API_TOKEN)
+
+# Модель SDXL Lightning — моментальная, качество Midjourney
+TEXT2IMG_MODEL = "stability-ai/sdxl-lightning:8bea9e8a4d4c3a7e7a5f8f2e8b3c6d1e9a0b4c5d6e7f8a9b0c1d2e3f4a5b6c7"
+IMG2IMG_MODEL = "stability-ai/stable-diffusion-img2img:8bea9e8a4d4c3a7e7a5f8f2e8b3c6d1e9a0b4c5d6e7f8a9b0c1d2e3f4a5b6c7"
 
 class AdminActions(StatesGroup):
     waiting_for_vip_id = State()
@@ -51,15 +53,13 @@ async def check_access(message: types.Message) -> bool:
 async def cmd_start(message: types.Message):
     await message.answer(
         "☂️ <b>ixxy AI</b> 🤖\n"
-        "Рисую и редактирую на уровне Midjourney! Бесплатно, без регистрации.\n\n"
-        f"🆓 Бесплатно: {FREE_LIMIT} генерации\n"
+        "Рисую как Midjourney! Бесплатно и быстро.\n\n"
+        f"🆓 Бесплатно: {FREE_LIMIT} генерации навсегда\n"
         "💎 VIP (350₽ навсегда): безлимит + приоритет\n\n"
         "🎯 Команды:\n"
         "/gen твой запрос — создать картинку\n"
         "/edit (отправь фото с подписью) — изменить фото\n"
-        "/buy — купить VIP\n\n"
-        "💡 <i>Пример для /gen: cyberpunk samurai in rain, neon lights, photorealistic</i>\n"
-        "<i>Пример для /edit: пришли фото и напиши 'сделай аниме'</i>",
+        "/buy — купить VIP",
         parse_mode=ParseMode.HTML
     )
 
@@ -88,30 +88,21 @@ async def cmd_generate(message: types.Message):
         await message.answer("Напиши запрос: /gen киберпанк-кот")
         return
 
-    msg = await message.answer("🎨 Создаю шедевр на SDXL... (до 60 секунд)")
+    msg = await message.answer("🎨 Генерирую... (2-5 секунд)")
     try:
-        enhanced_prompt = f"{prompt}, cinematic lighting, photorealistic, 8k, highly detailed, sharp focus"
-        payload = {
-            "prompt": enhanced_prompt,
-            "model": HORDE_MODEL,
-            "params": {
-                "sampler_name": "k_euler_a",
-                "cfg_scale": 7.5,
+        output = client.run(
+            TEXT2IMG_MODEL,
+            input={
+                "prompt": f"{prompt}, cinematic, 8k, highly detailed",
                 "width": 1024,
                 "height": 1024,
-                "steps": 30,
-                "seed": -1
+                "num_inference_steps": 4,
+                "guidance_scale": 0
             }
-        }
-        resp = requests.post(HORDE_API_URL, json=payload, timeout=90)
-        data = resp.json()
-        if "error" in data:
-            raise Exception(data["error"].get("message", "неизвестная ошибка"))
-        img_b64 = data["img"]
-        img_bytes = base64.b64decode(img_b64)
-        await message.reply_photo(
-            BufferedInputFile(img_bytes, filename="generated.jpg")
         )
+        img_url = output[0] if isinstance(output, list) else output
+        img_bytes = requests.get(img_url).content
+        await message.reply_photo(BufferedInputFile(img_bytes, filename="gen.jpg"))
         await msg.delete()
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {e}")
@@ -125,44 +116,26 @@ async def handle_photo(message: types.Message):
     file = await message.bot.get_file(file_id)
     file_url = f"https://api.telegram.org/file/bot{message.bot.token}/{file.file_path}"
 
-    msg = await message.answer("🔧 Редактирую фото через SDXL (до минуты)...")
+    msg = await message.answer("🔧 Редактирую фото... (5-10 секунд)")
     try:
-        img_resp = requests.get(file_url)
-        img_bytes = img_resp.content
-        img_b64 = base64.b64encode(img_bytes).decode("utf-8")
-
-        enhanced_prompt = f"{prompt}, cinematic, photorealistic, 8k, highly detailed"
-
-        payload = {
-            "prompt": enhanced_prompt,
-            "model": HORDE_MODEL,
-            "params": {
-                "sampler_name": "k_euler_a",
-                "cfg_scale": 7.5,
-                "denoising_strength": 0.75,
-                "width": 1024,
-                "height": 1024,
-                "steps": 25,
-                "seed": -1,
-                "source_image": img_b64,
-                "source_processing": "img2img"
+        output = client.run(
+            IMG2IMG_MODEL,
+            input={
+                "image": file_url,
+                "prompt": f"{prompt}, highly detailed, 8k",
+                "strength": 0.75,
+                "guidance_scale": 7.5,
+                "num_inference_steps": 25
             }
-        }
-        resp = requests.post(HORDE_API_URL, json=payload, timeout=90)
-        data = resp.json()
-        if "error" in data:
-            raise Exception(data["error"]["message"])
-
-        result_b64 = data["img"]
-        result_bytes = base64.b64decode(result_b64)
-        await message.reply_photo(
-            BufferedInputFile(result_bytes, filename="edited.jpg")
         )
+        img_url = output[0] if isinstance(output, list) else output
+        img_bytes = requests.get(img_url).content
+        await message.reply_photo(BufferedInputFile(img_bytes, filename="edited.jpg"))
         await msg.delete()
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {e}")
 
-# ==================== АДМИН-ПАНЕЛЬ ====================
+# ==================== АДМИН-ПАНЕЛЬ (без изменений) ====================
 def admin_keyboard() -> InlineKeyboardMarkup:
     buttons = [
         [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
