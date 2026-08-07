@@ -4,4 +4,4 @@ requests
 aiohttp
 huggingface_hub
 Pillow
-google-generativeai
+google-genai
