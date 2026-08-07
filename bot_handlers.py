@@ -1,17 +1,32 @@
 import asyncio
 import replicate
 from aiogram import Router, types, F
-from aiogram.filters import Command
+from aiogram.filters import Command, StateFilter
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import StatesGroup, State
 from aiogram.enums import ParseMode
-from config import REPLICATE_API_TOKEN, FREE_LIMIT
-from vip_manager import is_vip, add_vip, can_use_free, use_free
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from config import REPLICATE_API_TOKEN, FREE_LIMIT, ADMIN_ID
+from vip_manager import (
+    is_vip, add_vip, can_use_free, use_free,
+    load_vips, save_vips, load_free_usage
+)
 from payment import create_payment_url
 
 router = Router()
 replicate_client = replicate.Client(api_token=REPLICATE_API_TOKEN)
-
 base_webhook_url: str = None
 
+# --- Состояния для админки (FSM) ---
+class AdminActions(StatesGroup):
+    waiting_for_vip_id = State()
+    waiting_for_remove_vip_id = State()
+
+# --- Проверка админа ---
+def is_admin(user_id: int) -> bool:
+    return user_id == ADMIN_ID
+
+# ==================== ОБЫЧНЫЕ КОМАНДЫ ====================
 async def check_access(message: types.Message) -> bool:
     uid = message.from_user.id
     if is_vip(uid):
@@ -100,3 +115,115 @@ async def handle_photo(message: types.Message):
         await message.reply_photo(output[0])
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {e}")
+
+# ==================== АДМИН-ПАНЕЛЬ ====================
+def admin_keyboard() -> InlineKeyboardMarkup:
+    buttons = [
+        [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
+        [InlineKeyboardButton(text="➕ Выдать VIP", callback_data="admin_give_vip")],
+        [InlineKeyboardButton(text="➖ Снять VIP", callback_data="admin_remove_vip")],
+        [InlineKeyboardButton(text="📋 Список VIP", callback_data="admin_list_vip")],
+        [InlineKeyboardButton(text="🔄 Обновить", callback_data="admin_refresh")]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+@router.message(Command("admin"))
+async def admin_panel(message: types.Message):
+    if not is_admin(message.from_user.id):
+        return
+    await message.answer(
+        "🛡 <b>Админ-панель ☂️ ixxy AI</b>",
+        reply_markup=admin_keyboard(),
+        parse_mode=ParseMode.HTML
+    )
+
+# Обработчик нажатий кнопок
+@router.callback_query(F.data.startswith("admin_"))
+async def admin_callback(callback: types.CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+
+    action = callback.data
+
+    if action == "admin_stats":
+        vips = load_vips()
+        free_data = load_free_usage()
+        text = (
+            f"📊 <b>Статистика</b>\n"
+            f"└ Пользователей с бесплатными попытками: {len(free_data)}\n"
+            f"└ VIP-пользователей: {len(vips)}\n"
+        )
+        await callback.message.edit_text(text, reply_markup=admin_keyboard(), parse_mode=ParseMode.HTML)
+        await callback.answer()
+
+    elif action == "admin_list_vip":
+        vips = load_vips()
+        text = "<b>📋 Список VIP:</b>\n"
+        if vips:
+            for uid in vips:
+                text += f"• <code>{uid}</code>\n"
+        else:
+            text += "• никого"
+        await callback.message.edit_text(text, reply_markup=admin_keyboard(), parse_mode=ParseMode.HTML)
+        await callback.answer()
+
+    elif action == "admin_give_vip":
+        await state.set_state(AdminActions.waiting_for_vip_id)
+        await callback.message.edit_text(
+            "➕ Введите <b>ID пользователя</b>, которому выдать VIP:",
+            parse_mode=ParseMode.HTML
+        )
+        await callback.answer()
+
+    elif action == "admin_remove_vip":
+        await state.set_state(AdminActions.waiting_for_remove_vip_id)
+        await callback.message.edit_text(
+            "➖ Введите <b>ID пользователя</b>, у которого забрать VIP:",
+            parse_mode=ParseMode.HTML
+        )
+        await callback.answer()
+
+    elif action == "admin_refresh":
+        await callback.message.edit_text(
+            "🛡 <b>Админ-панель ☂️ ixxy AI</b>",
+            reply_markup=admin_keyboard(),
+            parse_mode=ParseMode.HTML
+        )
+        await callback.answer()
+
+# Приём ID для выдачи VIP
+@router.message(StateFilter(AdminActions.waiting_for_vip_id))
+async def process_give_vip_id(message: types.Message, state: FSMContext):
+    if not message.text.isdigit():
+        await message.answer("❌ Введите числовой ID.")
+        return
+    uid = int(message.text)
+    if is_vip(uid):
+        await message.answer(f"ℹ️ Пользователь {uid} уже VIP.")
+    else:
+        add_vip(uid)
+        await message.answer(f"✅ Пользователь {uid} теперь VIP!")
+        try:
+            await message.bot.send_message(uid, "🎉 Тебе выдали вечный VIP! Используй /gen и /edit без ограничений.")
+        except:
+            pass
+    await state.clear()
+    await message.answer("🛡 Админ-панель:", reply_markup=admin_keyboard())
+
+# Приём ID для снятия VIP
+@router.message(StateFilter(AdminActions.waiting_for_remove_vip_id))
+async def process_remove_vip_id(message: types.Message, state: FSMContext):
+    if not message.text.isdigit():
+        await message.answer("❌ Введите числовой ID.")
+        return
+    uid = int(message.text)
+    vips = load_vips()
+    if uid not in vips:
+        await message.answer(f"ℹ️ Пользователь {uid} не VIP.")
+    else:
+        vips.remove(uid)
+        save_vips(vips)
+        await message.answer(f"❌ Пользователь {uid} лишён VIP.")
+    await state.clear()
+    await message.answer("🛡 Админ-панель:", reply_markup=admin_keyboard())
