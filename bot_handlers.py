@@ -1,3 +1,4 @@
+# bot_handlers.py
 import asyncio
 import replicate
 from aiogram import Router, types, F
@@ -92,7 +93,6 @@ async def handle_photo(message: types.Message):
 
     msg = await message.answer("🔧 Обрабатываю фото...")
     try:
-        # ВАЖНО: замени на актуальную модель img2img с replicate.com
         output = replicate_client.run(
             "stability-ai/stable-diffusion-img2img:8bea9e8a4d4c3a7e7a5f8f2e8b3c6d1e9a0b4c5d6e7f8a9b0c1d2e3f4a5b6c7",
             input={
