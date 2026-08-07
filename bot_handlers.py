@@ -19,15 +19,13 @@ from payment import create_payment_url
 router = Router()
 base_webhook_url: str = None
 
-client = replicate.Client(api_token=REPLICATE_API_TOKEN)
+# Клиент Replicate с увеличенным таймаутом для видео
+client = replicate.Client(api_token=REPLICATE_API_TOKEN, timeout=300)
 
-# Генерация — SDXL Lightning (моментальная)
+# Модели
 TEXT2IMG_MODEL = "stability-ai/sdxl-lightning:8bea9e8a4d4c3a7e7a5f8f2e8b3c6d1e9a0b4c5d6e7f8a9b0c1d2e3f4a5b6c7"
-
-# Редактирование фото — ОБЩЕДОСТУПНАЯ модель (не требует подтверждения)
-# Если вдруг не сработает, иди на https://replicate.com/lucataco/stable-diffusion-img2img/api
-# и скопируй актуальный идентификатор после "replicate.run("
-IMG2IMG_MODEL = "lucataco/stable-diffusion-img2img:a39d4b7e0a7d0c5d9d4e1a8c1e8c0e6d2d7e0d1c2e8e4d8f6c1a4c1e1d6f7e8c"
+IMG2IMG_MODEL = "stability-ai/stable-diffusion-img2img:8bea9e8a4d4c3a7e7a5f8f2e8b3c6d1e9a0b4c5d6e7f8a9b0c1d2e3f4a5b6c7"
+VIDEO_MODEL = "xai/grok-imagine-video"
 
 class AdminActions(StatesGroup):
     waiting_for_vip_id = State()
@@ -36,8 +34,8 @@ class AdminActions(StatesGroup):
 def is_admin(user_id: int) -> bool:
     return user_id == ADMIN_ID
 
-# ==================== ОБЫЧНЫЕ КОМАНДЫ ====================
-async def check_access(message: types.Message) -> bool:
+# ==================== ПРОВЕРКИ ДОСТУПА ====================
+async def check_image_access(message: types.Message) -> bool:
     uid = message.from_user.id
     if is_vip(uid):
         return True
@@ -51,16 +49,24 @@ async def check_access(message: types.Message) -> bool:
     )
     return False
 
+async def check_video_access(message: types.Message) -> bool:
+    if is_vip(message.from_user.id):
+        return True
+    await message.answer("🎬 Видео — только для VIP. Купи доступ за 350₽ — /buy")
+    return False
+
+# ==================== ОБЫЧНЫЕ КОМАНДЫ ====================
 @router.message(Command("start"))
 async def cmd_start(message: types.Message):
     await message.answer(
         "☂️ <b>ixxy AI</b> 🤖\n"
-        "Рисую как Midjourney! Бесплатно и быстро.\n\n"
-        f"🆓 Бесплатно: {FREE_LIMIT} генерации навсегда\n"
-        "💎 VIP (350₽ навсегда): безлимит + приоритет\n\n"
+        "Рисую, редактирую, снимаю видео!\n\n"
+        f"🆓 Бесплатно: {FREE_LIMIT} картинок\n"
+        "💎 VIP (350₽ навсегда): безлимит + видео\n\n"
         "🎯 Команды:\n"
         "/gen твой запрос — создать картинку\n"
         "/edit (отправь фото с подписью) — изменить фото\n"
+        "/video твой запрос — сгенерировать видео\n"
         "/buy — купить VIP",
         parse_mode=ParseMode.HTML
     )
@@ -83,7 +89,7 @@ async def cmd_buy(message: types.Message):
 
 @router.message(Command("gen"))
 async def cmd_generate(message: types.Message):
-    if not await check_access(message):
+    if not await check_image_access(message):
         return
     prompt = message.text.partition(" ")[2]
     if not prompt:
@@ -111,7 +117,7 @@ async def cmd_generate(message: types.Message):
 
 @router.message(F.photo)
 async def handle_photo(message: types.Message):
-    if not await check_access(message):
+    if not await check_image_access(message):
         return
     prompt = message.caption or "improve quality, make it cinematic"
     file_id = message.photo[-1].file_id
@@ -137,7 +143,35 @@ async def handle_photo(message: types.Message):
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {e}")
 
-# ==================== АДМИН-ПАНЕЛЬ ====================
+@router.message(Command("video"))
+async def cmd_video(message: types.Message):
+    if not await check_video_access(message):
+        return
+    prompt = message.text.partition(" ")[2]
+    if not prompt:
+        await message.answer("Напиши запрос: /video кот танцует на пляже")
+        return
+
+    msg = await message.answer("🎬 Генерирую видео... (до 5 минут, ожидайте)")
+
+    try:
+        output = client.run(
+            VIDEO_MODEL,
+            input={
+                "prompt": prompt,
+                "aspect_ratio": "16:9"  # можно 1:1, 9:16
+            }
+        )
+        # output — объект FileOutput, у него есть .read() и .url
+        video_bytes = output.read()
+        await message.reply_video(
+            BufferedInputFile(video_bytes, filename="video.mp4")
+        )
+        await msg.delete()
+    except Exception as e:
+        await msg.edit_text(f"❌ Ошибка при создании видео: {e}")
+
+# ==================== АДМИН-ПАНЕЛЬ (без изменений) ====================
 def admin_keyboard() -> InlineKeyboardMarkup:
     buttons = [
         [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
@@ -224,7 +258,7 @@ async def process_give_vip_id(message: types.Message, state: FSMContext):
         add_vip(uid)
         await message.answer(f"✅ Пользователь {uid} теперь VIP!")
         try:
-            await message.bot.send_message(uid, "🎉 Тебе выдали вечный VIP! Используй /gen и /edit без ограничений.")
+            await message.bot.send_message(uid, "🎉 Тебе выдали вечный VIP! Используй /gen, /edit, /video без ограничений.")
         except:
             pass
     await state.clear()
