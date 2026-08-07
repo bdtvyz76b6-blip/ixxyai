@@ -2,6 +2,7 @@ import os
 import asyncio
 from aiohttp import web
 from aiogram import Bot, Dispatcher
+from aiogram.fsm.storage.memory import MemoryStorage   # ← нужно для FSM
 from aiogram.types import Update
 from bot_handlers import router
 from vip_manager import add_vip
@@ -9,7 +10,7 @@ from payment import verify_webhook_signature
 from config import BOT_TOKEN
 
 bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher()
+dp = Dispatcher(storage=MemoryStorage())   # ← включаем хранилище состояний
 dp.include_router(router)
 
 async def handle_cashera_webhook(request):
@@ -41,7 +42,6 @@ async def main():
     await site.start()
     print(f"Webhook server started on port {port}")
 
-    # Определяем публичный URL Railway (для передачи в /buy)
     public_domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "localhost")
     base_url = f"https://{public_domain}"
     import bot_handlers
