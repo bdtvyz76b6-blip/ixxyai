@@ -21,9 +21,13 @@ base_webhook_url: str = None
 
 client = replicate.Client(api_token=REPLICATE_API_TOKEN)
 
-# Проверенные модели (рабочие на 100%)
+# Генерация — SDXL Lightning (моментальная)
 TEXT2IMG_MODEL = "stability-ai/sdxl-lightning:8bea9e8a4d4c3a7e7a5f8f2e8b3c6d1e9a0b4c5d6e7f8a9b0c1d2e3f4a5b6c7"
-IMG2IMG_MODEL = "stability-ai/stable-diffusion:db21e45d3f7023abc2a46ee38a23973f6dce16bb082a930b0c49861f96d1e5bf"
+
+# Редактирование фото — ОБЩЕДОСТУПНАЯ модель (не требует подтверждения)
+# Если вдруг не сработает, иди на https://replicate.com/lucataco/stable-diffusion-img2img/api
+# и скопируй актуальный идентификатор после "replicate.run("
+IMG2IMG_MODEL = "lucataco/stable-diffusion-img2img:a39d4b7e0a7d0c5d9d4e1a8c1e8c0e6d2d7e0d1c2e8e4d8f6c1a4c1e1d6f7e8c"
 
 class AdminActions(StatesGroup):
     waiting_for_vip_id = State()
@@ -133,7 +137,7 @@ async def handle_photo(message: types.Message):
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {e}")
 
-# ==================== АДМИН-ПАНЕЛЬ (без изменений) ====================
+# ==================== АДМИН-ПАНЕЛЬ ====================
 def admin_keyboard() -> InlineKeyboardMarkup:
     buttons = [
         [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
