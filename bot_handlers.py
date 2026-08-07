@@ -3,6 +3,7 @@ import asyncio
 import os
 from io import BytesIO
 import requests
+import base64
 from aiogram import Router, types, F
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
@@ -19,12 +20,14 @@ from payment import create_payment_url
 router = Router()
 base_webhook_url: str = None
 
-# Инициализация клиента Hugging Face (только для text2img)
+# Инициализация клиента Hugging Face
 from huggingface_hub import InferenceClient
 hf_client = InferenceClient(token=HF_TOKEN)
 
-TEXT2IMG_MODEL = "stabilityai/stable-diffusion-xl-base-1.0"   # генерация по тексту
-IMG2IMG_MODEL = "stabilityai/stable-diffusion-2-1"            # обработка фото
+# Лучшие бесплатные модели
+TEXT2IMG_MODEL = "Lykon/dreamshaper-8"                # генерация (DreamShaper)
+IMG2IMG_MODEL = "stabilityai/stable-diffusion-2-1"    # редактирование фото
+ENHANCE_MODEL = "mistralai/Mixtral-8x7B-Instruct-v0.1"  # для улучшения промпта
 
 # Состояния для админки
 class AdminActions(StatesGroup):
@@ -59,7 +62,9 @@ async def cmd_start(message: types.Message):
         "🎯 Команды:\n"
         "/gen твой запрос — создать картинку\n"
         "/edit (отправь фото с подписью) — изменить фото\n"
-        "/buy — купить VIP",
+        "/buy — купить VIP\n\n"
+        "💡 <i>Совет: пиши промпты подробно, например:\n"
+        "/gen фотореалистичный кот-самурай на фоне горящего города, 8k, детализация</i>",
         parse_mode=ParseMode.HTML
     )
 
@@ -87,8 +92,25 @@ async def cmd_generate(message: types.Message):
     if not prompt:
         await message.answer("Напиши запрос: /gen киберпанк-кот на мотоцикле")
         return
-    msg = await message.answer("🎨 Генерирую... (бесплатно, может занять до 30 сек)")
+
+    msg = await message.answer("🎨 Улучшаю запрос и генерирую... (может занять до 60 сек)")
+
     try:
+        # --- Улучшение промпта через Mixtral (бесплатно) ---
+        try:
+            enhance_prompt = f"Преврати этот короткий запрос в подробное описание для генерации изображения. Выдай только описание на английском, без лишних слов: {prompt}"
+            enhanced = hf_client.text_generation(
+                enhance_prompt,
+                model=ENHANCE_MODEL,
+                max_new_tokens=100
+            )
+            if enhanced and len(enhanced) > 5:
+                prompt = enhanced.strip()
+                await msg.edit_text(f"🎨 Генерирую улучшенный запрос: <i>{prompt[:150]}...</i>", parse_mode=ParseMode.HTML)
+        except Exception:
+            pass  # если не вышло, используем оригинал
+
+        # --- Генерация изображения ---
         image = hf_client.text_to_image(prompt, model=TEXT2IMG_MODEL)
         bio = BytesIO()
         image.save(bio, format="JPEG")
@@ -109,18 +131,13 @@ async def handle_photo(message: types.Message):
     file = await message.bot.get_file(file_id)
     file_url = f"https://api.telegram.org/file/bot{message.bot.token}/{file.file_path}"
 
-    msg = await message.answer("🔧 Обрабатываю фото... (бесплатно, до 40 сек)")
+    msg = await message.answer("🔧 Обрабатываю фото... (до 40 сек)")
     try:
-        # Скачиваем фото
         img_response = requests.get(file_url)
         img_bytes = img_response.content
 
-        # Отправляем прямой HTTP‑запрос к Hugging Face img2img
         headers = {"Authorization": f"Bearer {HF_TOKEN}"}
         api_url = f"https://api-inference.huggingface.co/models/{IMG2IMG_MODEL}"
-
-        # Передаём изображение как base64 (в поле inputs)
-        import base64
         b64_img = base64.b64encode(img_bytes).decode("utf-8")
         payload = {
             "inputs": {
@@ -134,7 +151,6 @@ async def handle_photo(message: types.Message):
         if r.status_code != 200:
             raise Exception(f"HF API error: {r.text}")
 
-        # Отправляем полученное изображение
         await message.reply_photo(BufferedInputFile(r.content, filename="edited.jpg"))
         await msg.delete()
     except Exception as e:
