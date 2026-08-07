@@ -2,3 +2,4 @@ aiogram>=3.0
 replicate
 requests
 aiohttp
+huggingface_hub
