@@ -3,3 +3,4 @@ replicate
 requests
 aiohttp
 huggingface_hub
+Pillow
