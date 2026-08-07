@@ -1,4 +1,3 @@
-# bot_handlers.py
 import asyncio
 import replicate
 from aiogram import Router, types, F
@@ -11,10 +10,8 @@ from payment import create_payment_url
 router = Router()
 replicate_client = replicate.Client(api_token=REPLICATE_API_TOKEN)
 
-# Глобальная переменная для URL вебхука (заполняется из main.py)
 base_webhook_url: str = None
 
-# --- Проверка доступа (бесплатные попытки или VIP) ---
 async def check_access(message: types.Message) -> bool:
     uid = message.from_user.id
     if is_vip(uid):
@@ -29,7 +26,6 @@ async def check_access(message: types.Message) -> bool:
     )
     return False
 
-# --- /start ---
 @router.message(Command("start"))
 async def cmd_start(message: types.Message):
     await message.answer(
@@ -44,7 +40,6 @@ async def cmd_start(message: types.Message):
         parse_mode=ParseMode.HTML
     )
 
-# --- /buy ---
 @router.message(Command("buy"))
 async def cmd_buy(message: types.Message):
     if not base_webhook_url:
@@ -61,7 +56,6 @@ async def cmd_buy(message: types.Message):
     else:
         await message.answer("⚠️ Не удалось создать счёт. Попробуй позже.")
 
-# --- /gen ---
 @router.message(Command("gen"))
 async def cmd_generate(message: types.Message):
     if not await check_access(message):
@@ -81,7 +75,6 @@ async def cmd_generate(message: types.Message):
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {e}")
 
-# --- /edit (или фото с подписью) ---
 @router.message(F.photo)
 async def handle_photo(message: types.Message):
     if not await check_access(message):
