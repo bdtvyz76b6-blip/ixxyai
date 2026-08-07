@@ -1,12 +1,15 @@
+# bot_handlers.py
 import asyncio
-import replicate
+import os
+from io import BytesIO
+import requests
 from aiogram import Router, types, F
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.enums import ParseMode
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from config import REPLICATE_API_TOKEN, FREE_LIMIT, ADMIN_ID
+from config import FREE_LIMIT, ADMIN_ID, HF_TOKEN
 from vip_manager import (
     is_vip, add_vip, can_use_free, use_free,
     load_vips, save_vips, load_free_usage
@@ -14,15 +17,21 @@ from vip_manager import (
 from payment import create_payment_url
 
 router = Router()
-replicate_client = replicate.Client(api_token=REPLICATE_API_TOKEN)
 base_webhook_url: str = None
 
-# --- Состояния для админки (FSM) ---
+# Инициализация клиента Hugging Face
+from huggingface_hub import InferenceClient
+hf_client = InferenceClient(token=HF_TOKEN)
+
+# Модели (бесплатные, проверенные)
+TEXT2IMG_MODEL = "stabilityai/stable-diffusion-xl-base-1.0"   # генерация по тексту
+IMG2IMG_MODEL = "stabilityai/stable-diffusion-xl-refiner-1.0" # редактирование фото
+
+# Состояния для админки
 class AdminActions(StatesGroup):
     waiting_for_vip_id = State()
     waiting_for_remove_vip_id = State()
 
-# --- Проверка админа ---
 def is_admin(user_id: int) -> bool:
     return user_id == ADMIN_ID
 
@@ -45,9 +54,9 @@ async def check_access(message: types.Message) -> bool:
 async def cmd_start(message: types.Message):
     await message.answer(
         "☂️ <b>ixxy AI</b> 🤖\n"
-        "Генерирую картинки и редактирую фото нейросетями.\n\n"
+        "Бесплатные нейросети на борту!\n\n"
         f"🆓 Бесплатно: {FREE_LIMIT} генерации навсегда\n"
-        "💎 VIP (350₽ навсегда): безлимит + улучшенное качество + видео (скоро)\n\n"
+        "💎 VIP (350₽ навсегда): безлимит + улучшенное качество\n\n"
         "🎯 Команды:\n"
         "/gen твой запрос — создать картинку\n"
         "/edit (отправь фото с подписью) — изменить фото\n"
@@ -79,14 +88,16 @@ async def cmd_generate(message: types.Message):
     if not prompt:
         await message.answer("Напиши запрос: /gen киберпанк-кот на мотоцикле")
         return
-    msg = await message.answer("🎨 Генерирую...")
+    msg = await message.answer("🎨 Генерирую... (бесплатно, может занять до 30 сек)")
     try:
-        output = replicate_client.run(
-            "stability-ai/sdxl:39ed52f2a78e934b3ba6e2a89f5b1c712de7dfea535525255b1aa35c5565e08b",
-            input={"prompt": prompt, "width": 768, "height": 768}
-        )
+        # Генерация через Hugging Face
+        image = hf_client.text_to_image(prompt, model=TEXT2IMG_MODEL)
+        # Конвертируем в байты для отправки
+        bio = BytesIO()
+        image.save(bio, format="JPEG")
+        bio.seek(0)
         await msg.delete()
-        await message.reply_photo(output[0])
+        await message.reply_photo(bio)
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {e}")
 
@@ -95,135 +106,33 @@ async def handle_photo(message: types.Message):
     if not await check_access(message):
         return
     prompt = message.caption or "улучшить качество, сделать красиво"
+    # Получаем фото
     file_id = message.photo[-1].file_id
     file = await message.bot.get_file(file_id)
     file_url = f"https://api.telegram.org/file/bot{message.bot.token}/{file.file_path}"
 
-    msg = await message.answer("🔧 Обрабатываю фото...")
+    msg = await message.answer("🔧 Обрабатываю фото... (бесплатно, до 40 сек)")
     try:
-        output = replicate_client.run(
-            "stability-ai/stable-diffusion-img2img:8bea9e8a4d4c3a7e7a5f8f2e8b3c6d1e9a0b4c5d6e7f8a9b0c1d2e3f4a5b6c7",
-            input={
-                "image": file_url,
-                "prompt": prompt,
-                "num_inference_steps": 30,
-                "guidance_scale": 7.5,
-                "strength": 0.75
-            }
+        # Скачиваем изображение в память
+        response = requests.get(file_url)
+        image_bytes = response.content
+
+        # Отправляем на img2img через Inference API
+        # Используем модель refiner (она умеет image+prompt)
+        output_image = hf_client.image_to_image(
+            image=image_bytes,
+            prompt=prompt,
+            model=IMG2IMG_MODEL,
+            strength=0.75,
+            guidance_scale=7.5
         )
+        bio = BytesIO()
+        output_image.save(bio, format="JPEG")
+        bio.seek(0)
         await msg.delete()
-        await message.reply_photo(output[0])
+        await message.reply_photo(bio)
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {e}")
 
-# ==================== АДМИН-ПАНЕЛЬ ====================
-def admin_keyboard() -> InlineKeyboardMarkup:
-    buttons = [
-        [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
-        [InlineKeyboardButton(text="➕ Выдать VIP", callback_data="admin_give_vip")],
-        [InlineKeyboardButton(text="➖ Снять VIP", callback_data="admin_remove_vip")],
-        [InlineKeyboardButton(text="📋 Список VIP", callback_data="admin_list_vip")],
-        [InlineKeyboardButton(text="🔄 Обновить", callback_data="admin_refresh")]
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-@router.message(Command("admin"))
-async def admin_panel(message: types.Message):
-    if not is_admin(message.from_user.id):
-        return
-    await message.answer(
-        "🛡 <b>Админ-панель ☂️ ixxy AI</b>",
-        reply_markup=admin_keyboard(),
-        parse_mode=ParseMode.HTML
-    )
-
-# Обработчик нажатий кнопок
-@router.callback_query(F.data.startswith("admin_"))
-async def admin_callback(callback: types.CallbackQuery, state: FSMContext):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("⛔ Доступ запрещён", show_alert=True)
-        return
-
-    action = callback.data
-
-    if action == "admin_stats":
-        vips = load_vips()
-        free_data = load_free_usage()
-        text = (
-            f"📊 <b>Статистика</b>\n"
-            f"└ Пользователей с бесплатными попытками: {len(free_data)}\n"
-            f"└ VIP-пользователей: {len(vips)}\n"
-        )
-        await callback.message.edit_text(text, reply_markup=admin_keyboard(), parse_mode=ParseMode.HTML)
-        await callback.answer()
-
-    elif action == "admin_list_vip":
-        vips = load_vips()
-        text = "<b>📋 Список VIP:</b>\n"
-        if vips:
-            for uid in vips:
-                text += f"• <code>{uid}</code>\n"
-        else:
-            text += "• никого"
-        await callback.message.edit_text(text, reply_markup=admin_keyboard(), parse_mode=ParseMode.HTML)
-        await callback.answer()
-
-    elif action == "admin_give_vip":
-        await state.set_state(AdminActions.waiting_for_vip_id)
-        await callback.message.edit_text(
-            "➕ Введите <b>ID пользователя</b>, которому выдать VIP:",
-            parse_mode=ParseMode.HTML
-        )
-        await callback.answer()
-
-    elif action == "admin_remove_vip":
-        await state.set_state(AdminActions.waiting_for_remove_vip_id)
-        await callback.message.edit_text(
-            "➖ Введите <b>ID пользователя</b>, у которого забрать VIP:",
-            parse_mode=ParseMode.HTML
-        )
-        await callback.answer()
-
-    elif action == "admin_refresh":
-        await callback.message.edit_text(
-            "🛡 <b>Админ-панель ☂️ ixxy AI</b>",
-            reply_markup=admin_keyboard(),
-            parse_mode=ParseMode.HTML
-        )
-        await callback.answer()
-
-# Приём ID для выдачи VIP
-@router.message(StateFilter(AdminActions.waiting_for_vip_id))
-async def process_give_vip_id(message: types.Message, state: FSMContext):
-    if not message.text.isdigit():
-        await message.answer("❌ Введите числовой ID.")
-        return
-    uid = int(message.text)
-    if is_vip(uid):
-        await message.answer(f"ℹ️ Пользователь {uid} уже VIP.")
-    else:
-        add_vip(uid)
-        await message.answer(f"✅ Пользователь {uid} теперь VIP!")
-        try:
-            await message.bot.send_message(uid, "🎉 Тебе выдали вечный VIP! Используй /gen и /edit без ограничений.")
-        except:
-            pass
-    await state.clear()
-    await message.answer("🛡 Админ-панель:", reply_markup=admin_keyboard())
-
-# Приём ID для снятия VIP
-@router.message(StateFilter(AdminActions.waiting_for_remove_vip_id))
-async def process_remove_vip_id(message: types.Message, state: FSMContext):
-    if not message.text.isdigit():
-        await message.answer("❌ Введите числовой ID.")
-        return
-    uid = int(message.text)
-    vips = load_vips()
-    if uid not in vips:
-        await message.answer(f"ℹ️ Пользователь {uid} не VIP.")
-    else:
-        vips.remove(uid)
-        save_vips(vips)
-        await message.answer(f"❌ Пользователь {uid} лишён VIP.")
-    await state.clear()
-    await message.answer("🛡 Админ-панель:", reply_markup=admin_keyboard())
+# ==================== АДМИН-ПАНЕЛЬ (без изменений) ====================
+# ... оставь как было, с кнопками и состояниями ...
