@@ -3,7 +3,8 @@ import asyncio
 import os
 from io import BytesIO
 import requests
-import aiohttp
+import time
+import base64
 from aiogram import Router, types, F
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
@@ -19,6 +20,10 @@ from payment import create_payment_url
 
 router = Router()
 base_webhook_url: str = None
+
+# Используем самую мощную модель — SDXL
+HORDE_API_URL = "https://stablehorde.net/api/v2/generate/sync"
+HORDE_MODEL = "stable_diffusion_xl"  # <<< ВОТ ТУТ SDXL
 
 class AdminActions(StatesGroup):
     waiting_for_vip_id = State()
@@ -46,14 +51,14 @@ async def check_access(message: types.Message) -> bool:
 async def cmd_start(message: types.Message):
     await message.answer(
         "☂️ <b>ixxy AI</b> 🤖\n"
-        "Генерирую картинки по твоему описанию!\n\n"
-        f"🆓 Бесплатно: {FREE_LIMIT} генерации навсегда\n"
-        "💎 VIP (350₽ навсегда): безлимит\n\n"
+        "Генерирую на уровне Midjourney! Бесплатно, без регистрации.\n\n"
+        f"🆓 Бесплатно: {FREE_LIMIT} генерации\n"
+        "💎 VIP (350₽ навсегда): безлимит + приоритет\n\n"
         "🎯 Команды:\n"
         "/gen твой запрос — создать картинку\n"
         "/buy — купить VIP\n\n"
-        "💡 <i>Пиши запросы подробно, например:\n"
-        "/gen киберпанк-кот на мотоцикле, неон, дождь, 8k</i>",
+        "💡 <i>Пиши запросы как для Midjourney, например:\n"
+        "/gen cyberpunk samurai in rain, neon lights, photorealistic</i>",
         parse_mode=ParseMode.HTML
     )
 
@@ -79,33 +84,43 @@ async def cmd_generate(message: types.Message):
         return
     prompt = message.text.partition(" ")[2]
     if not prompt:
-        await message.answer("Напиши запрос: /gen киберпанк-кот на мотоцикле")
+        await message.answer("Напиши запрос: /gen cyberpunk cat")
         return
 
-    msg = await message.answer("🎨 Генерирую... (обычно до 15 секунд)")
+    msg = await message.answer("🎨 Создаю шедевр на SDXL... (до 60 секунд)")
     try:
-        # Отправляем запрос в Pollinations.ai
-        safe_prompt = requests.utils.quote(prompt)
-        url = f"https://image.pollinations.ai/prompt/{safe_prompt}?width=1024&height=1024&nologo=true"
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url) as resp:
-                if resp.status == 200:
-                    image_bytes = await resp.read()
-                    await message.reply_photo(
-                        BufferedInputFile(image_bytes, filename="generated.jpg")
-                    )
-                    await msg.delete()
-                else:
-                    raise Exception(f"Ошибка сервера: {resp.status}")
+        # Улучшаем промпт как для Midjourney
+        enhanced_prompt = f"{prompt}, cinematic lighting, photorealistic, 8k, highly detailed, sharp focus"
+        payload = {
+            "prompt": enhanced_prompt,
+            "model": HORDE_MODEL,
+            "params": {
+                "sampler_name": "k_euler_a",
+                "cfg_scale": 7.5,
+                "width": 1024,          # максимальное качество
+                "height": 1024,
+                "steps": 30,            # больше шагов = детальнее
+                "seed": -1
+            }
+        }
+        resp = requests.post(HORDE_API_URL, json=payload, timeout=90)
+        data = resp.json()
+        if "error" in data:
+            raise Exception(data["error"].get("message", "неизвестная ошибка"))
+        img_base64 = data["img"]
+        img_bytes = base64.b64decode(img_base64)
+        await message.reply_photo(
+            BufferedInputFile(img_bytes, filename="masterpiece.jpg")
+        )
+        await msg.delete()
     except Exception as e:
-        await msg.edit_text(f"❌ Не получилось создать картинку. Попробуй позже.\nОшибка: {e}")
+        await msg.edit_text(f"❌ Ошибка: {e}")
 
-# Редактирование фото отключено для стабильности
 @router.message(F.photo)
 async def handle_photo(message: types.Message):
-    await message.answer("🛠 Редактирование фото временно недоступно. Используй /gen для создания картинок.")
+    await message.answer("🛠 Редактирование пока в разработке. Используй /gen.")
 
-# ==================== АДМИН-ПАНЕЛЬ ====================
+# ==================== АДМИН-ПАНЕЛЬ (без изменений) ====================
 def admin_keyboard() -> InlineKeyboardMarkup:
     buttons = [
         [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
