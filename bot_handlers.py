@@ -1,9 +1,7 @@
 # bot_handlers.py
-import asyncio
 import os
 import requests
 from io import BytesIO
-import google.generativeai as genai
 from aiogram import Router, types, F
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
@@ -17,12 +15,16 @@ from vip_manager import (
 )
 from payment import create_payment_url
 
+# Новый импорт Google Gemini
+from google import genai
+from google.genai.types import Part
+
 router = Router()
 base_webhook_url: str = None
 
-# Настраиваем Gemini
-genai.configure(api_token=os.getenv("GEMINI_API_KEY"))
-model = genai.GenerativeModel("gemini-2.0-flash-exp-image-generation")
+# Настройка клиента
+client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+MODEL_NAME = "gemini-2.0-flash-exp-image-generation"
 
 class AdminActions(StatesGroup):
     waiting_for_vip_id = State()
@@ -89,22 +91,17 @@ async def cmd_generate(message: types.Message):
 
     msg = await message.answer("🎨 Рисую через Gemini... (5-10 сек)")
     try:
-        # Генерация изображения по тексту
-        response = model.generate_content(
-            f"Generate a high-quality, detailed image of: {prompt}"
+        response = client.models.generate_content(
+            model=MODEL_NAME,
+            contents=f"Generate a high-quality, detailed image of: {prompt}"
         )
-        # Извлекаем изображение (если есть)
-        if hasattr(response, "images") and response.images:
-            img_bytes = response.images[0].data
-        else:
-            # Иногда ответ приходит в виде Markdown с base64
-            # Пробуем найти base64 строку
-            import re
-            match = re.search(r"!\[.*?\]\(data:image/png;base64,(.+?)\)", response.text)
-            if match:
-                img_bytes = base64.b64decode(match.group(1))
-            else:
-                raise Exception("Модель не вернула изображение. Попробуй другой запрос.")
+        img_bytes = None
+        for part in response.candidates[0].content.parts:
+            if part.inline_data and part.inline_data.mime_type.startswith("image/"):
+                img_bytes = part.inline_data.data
+                break
+        if not img_bytes:
+            raise Exception("Модель не вернула изображение. Попробуй другой запрос.")
         await message.reply_photo(BufferedInputFile(img_bytes, filename="gemini.jpg"))
         await msg.delete()
     except Exception as e:
@@ -121,20 +118,23 @@ async def handle_photo(message: types.Message):
 
     msg = await message.answer("🔧 Редактирую через Gemini... (5-10 сек)")
     try:
-        # Скачиваем фото
         img_resp = requests.get(file_url)
         img_bytes = img_resp.content
 
-        # Отправляем фото и промпт в Gemini
-        response = model.generate_content(
-            [
-                {"mime_type": "image/jpeg", "data": img_bytes},
-                f"Измени это изображение согласно описанию: {prompt}"
-            ]
+        contents = [
+            Part.from_bytes(data=img_bytes, mime_type="image/jpeg"),
+            f"Измени это изображение согласно описанию: {prompt}"
+        ]
+        response = client.models.generate_content(
+            model=MODEL_NAME,
+            contents=contents
         )
-        if hasattr(response, "images") and response.images:
-            result_bytes = response.images[0].data
-        else:
+        result_bytes = None
+        for part in response.candidates[0].content.parts:
+            if part.inline_data and part.inline_data.mime_type.startswith("image/"):
+                result_bytes = part.inline_data.data
+                break
+        if not result_bytes:
             raise Exception("Не удалось отредактировать фото.")
         await message.reply_photo(BufferedInputFile(result_bytes, filename="edited.jpg"))
         await msg.delete()
