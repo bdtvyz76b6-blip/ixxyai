@@ -21,9 +21,9 @@ from payment import create_payment_url
 router = Router()
 base_webhook_url: str = None
 
-# Используем самую мощную модель — SDXL
+# Stable Horde API (SDXL)
 HORDE_API_URL = "https://stablehorde.net/api/v2/generate/sync"
-HORDE_MODEL = "stable_diffusion_xl"  # <<< ВОТ ТУТ SDXL
+HORDE_MODEL = "stable_diffusion_xl"
 
 class AdminActions(StatesGroup):
     waiting_for_vip_id = State()
@@ -51,14 +51,15 @@ async def check_access(message: types.Message) -> bool:
 async def cmd_start(message: types.Message):
     await message.answer(
         "☂️ <b>ixxy AI</b> 🤖\n"
-        "Генерирую на уровне Midjourney! Бесплатно, без регистрации.\n\n"
+        "Рисую и редактирую на уровне Midjourney! Бесплатно, без регистрации.\n\n"
         f"🆓 Бесплатно: {FREE_LIMIT} генерации\n"
         "💎 VIP (350₽ навсегда): безлимит + приоритет\n\n"
         "🎯 Команды:\n"
         "/gen твой запрос — создать картинку\n"
+        "/edit (отправь фото с подписью) — изменить фото\n"
         "/buy — купить VIP\n\n"
-        "💡 <i>Пиши запросы как для Midjourney, например:\n"
-        "/gen cyberpunk samurai in rain, neon lights, photorealistic</i>",
+        "💡 <i>Пример для /gen: cyberpunk samurai in rain, neon lights, photorealistic</i>\n"
+        "<i>Пример для /edit: пришли фото и напиши 'сделай аниме'</i>",
         parse_mode=ParseMode.HTML
     )
 
@@ -84,12 +85,11 @@ async def cmd_generate(message: types.Message):
         return
     prompt = message.text.partition(" ")[2]
     if not prompt:
-        await message.answer("Напиши запрос: /gen cyberpunk cat")
+        await message.answer("Напиши запрос: /gen киберпанк-кот")
         return
 
     msg = await message.answer("🎨 Создаю шедевр на SDXL... (до 60 секунд)")
     try:
-        # Улучшаем промпт как для Midjourney
         enhanced_prompt = f"{prompt}, cinematic lighting, photorealistic, 8k, highly detailed, sharp focus"
         payload = {
             "prompt": enhanced_prompt,
@@ -97,9 +97,9 @@ async def cmd_generate(message: types.Message):
             "params": {
                 "sampler_name": "k_euler_a",
                 "cfg_scale": 7.5,
-                "width": 1024,          # максимальное качество
+                "width": 1024,
                 "height": 1024,
-                "steps": 30,            # больше шагов = детальнее
+                "steps": 30,
                 "seed": -1
             }
         }
@@ -107,10 +107,10 @@ async def cmd_generate(message: types.Message):
         data = resp.json()
         if "error" in data:
             raise Exception(data["error"].get("message", "неизвестная ошибка"))
-        img_base64 = data["img"]
-        img_bytes = base64.b64decode(img_base64)
+        img_b64 = data["img"]
+        img_bytes = base64.b64decode(img_b64)
         await message.reply_photo(
-            BufferedInputFile(img_bytes, filename="masterpiece.jpg")
+            BufferedInputFile(img_bytes, filename="generated.jpg")
         )
         await msg.delete()
     except Exception as e:
@@ -118,9 +118,51 @@ async def cmd_generate(message: types.Message):
 
 @router.message(F.photo)
 async def handle_photo(message: types.Message):
-    await message.answer("🛠 Редактирование пока в разработке. Используй /gen.")
+    if not await check_access(message):
+        return
+    prompt = message.caption or "improve quality, make it cinematic"
+    file_id = message.photo[-1].file_id
+    file = await message.bot.get_file(file_id)
+    file_url = f"https://api.telegram.org/file/bot{message.bot.token}/{file.file_path}"
 
-# ==================== АДМИН-ПАНЕЛЬ (без изменений) ====================
+    msg = await message.answer("🔧 Редактирую фото через SDXL (до минуты)...")
+    try:
+        img_resp = requests.get(file_url)
+        img_bytes = img_resp.content
+        img_b64 = base64.b64encode(img_bytes).decode("utf-8")
+
+        enhanced_prompt = f"{prompt}, cinematic, photorealistic, 8k, highly detailed"
+
+        payload = {
+            "prompt": enhanced_prompt,
+            "model": HORDE_MODEL,
+            "params": {
+                "sampler_name": "k_euler_a",
+                "cfg_scale": 7.5,
+                "denoising_strength": 0.75,
+                "width": 1024,
+                "height": 1024,
+                "steps": 25,
+                "seed": -1,
+                "source_image": img_b64,
+                "source_processing": "img2img"
+            }
+        }
+        resp = requests.post(HORDE_API_URL, json=payload, timeout=90)
+        data = resp.json()
+        if "error" in data:
+            raise Exception(data["error"]["message"])
+
+        result_b64 = data["img"]
+        result_bytes = base64.b64decode(result_b64)
+        await message.reply_photo(
+            BufferedInputFile(result_bytes, filename="edited.jpg")
+        )
+        await msg.delete()
+    except Exception as e:
+        await msg.edit_text(f"❌ Ошибка: {e}")
+
+# ==================== АДМИН-ПАНЕЛЬ ====================
 def admin_keyboard() -> InlineKeyboardMarkup:
     buttons = [
         [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
@@ -207,7 +249,7 @@ async def process_give_vip_id(message: types.Message, state: FSMContext):
         add_vip(uid)
         await message.answer(f"✅ Пользователь {uid} теперь VIP!")
         try:
-            await message.bot.send_message(uid, "🎉 Тебе выдали вечный VIP! Используй /gen без ограничений.")
+            await message.bot.send_message(uid, "🎉 Тебе выдали вечный VIP! Используй /gen и /edit без ограничений.")
         except:
             pass
     await state.clear()
