@@ -1,6 +1,7 @@
 import json
 import os
 from threading import Lock
+from config import FREE_LIMIT
 
 VIP_FILE = "vips.json"
 FREE_FILE = "free_usage.json"
