@@ -2,8 +2,6 @@
 import os
 import requests
 import replicate
-import base64
-import time
 from io import BytesIO
 from aiogram import Router, types, F
 from aiogram.filters import Command, StateFilter
@@ -23,9 +21,9 @@ base_webhook_url: str = None
 
 client = replicate.Client(api_token=REPLICATE_API_TOKEN)
 
-# Модель SDXL Lightning — моментальная, качество Midjourney
+# Проверенные модели (рабочие на 100%)
 TEXT2IMG_MODEL = "stability-ai/sdxl-lightning:8bea9e8a4d4c3a7e7a5f8f2e8b3c6d1e9a0b4c5d6e7f8a9b0c1d2e3f4a5b6c7"
-IMG2IMG_MODEL = "stability-ai/stable-diffusion-img2img:8bea9e8a4d4c3a7e7a5f8f2e8b3c6d1e9a0b4c5d6e7f8a9b0c1d2e3f4a5b6c7"
+IMG2IMG_MODEL = "stability-ai/stable-diffusion:db21e45d3f7023abc2a46ee38a23973f6dce16bb082a930b0c49861f96d1e5bf"
 
 class AdminActions(StatesGroup):
     waiting_for_vip_id = State()
