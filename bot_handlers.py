@@ -3,7 +3,6 @@ import asyncio
 import os
 from io import BytesIO
 import requests
-import base64
 from aiogram import Router, types, F
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
@@ -24,10 +23,9 @@ base_webhook_url: str = None
 from huggingface_hub import InferenceClient
 hf_client = InferenceClient(token=HF_TOKEN)
 
-# Лучшие бесплатные модели
-TEXT2IMG_MODEL = "Lykon/dreamshaper-8"                # генерация (DreamShaper)
-IMG2IMG_MODEL = "stabilityai/stable-diffusion-2-1"    # редактирование фото
-ENHANCE_MODEL = "mistralai/Mixtral-8x7B-Instruct-v0.1"  # для улучшения промпта
+# Проверенные бесплатные модели (работают с read-токеном)
+TEXT2IMG_MODEL = "runwayml/stable-diffusion-v1-5"   # генерация
+IMG2IMG_MODEL = "runwayml/stable-diffusion-v1-5"    # редактирование фото
 
 # Состояния для админки
 class AdminActions(StatesGroup):
@@ -64,7 +62,7 @@ async def cmd_start(message: types.Message):
         "/edit (отправь фото с подписью) — изменить фото\n"
         "/buy — купить VIP\n\n"
         "💡 <i>Совет: пиши промпты подробно, например:\n"
-        "/gen фотореалистичный кот-самурай на фоне горящего города, 8k, детализация</i>",
+        "/gen фотореалистичный кот-самурай на фоне горящего города, 8k</i>",
         parse_mode=ParseMode.HTML
     )
 
@@ -93,24 +91,9 @@ async def cmd_generate(message: types.Message):
         await message.answer("Напиши запрос: /gen киберпанк-кот на мотоцикле")
         return
 
-    msg = await message.answer("🎨 Улучшаю запрос и генерирую... (может занять до 60 сек)")
-
+    msg = await message.answer("🎨 Генерирую... (бесплатно, до 30 сек)")
     try:
-        # --- Улучшение промпта через Mixtral (бесплатно) ---
-        try:
-            enhance_prompt = f"Преврати этот короткий запрос в подробное описание для генерации изображения. Выдай только описание на английском, без лишних слов: {prompt}"
-            enhanced = hf_client.text_generation(
-                enhance_prompt,
-                model=ENHANCE_MODEL,
-                max_new_tokens=100
-            )
-            if enhanced and len(enhanced) > 5:
-                prompt = enhanced.strip()
-                await msg.edit_text(f"🎨 Генерирую улучшенный запрос: <i>{prompt[:150]}...</i>", parse_mode=ParseMode.HTML)
-        except Exception:
-            pass  # если не вышло, используем оригинал
-
-        # --- Генерация изображения ---
+        # Генерация без автоулучшения (работает стабильно)
         image = hf_client.text_to_image(prompt, model=TEXT2IMG_MODEL)
         bio = BytesIO()
         image.save(bio, format="JPEG")
@@ -133,25 +116,24 @@ async def handle_photo(message: types.Message):
 
     msg = await message.answer("🔧 Обрабатываю фото... (до 40 сек)")
     try:
-        img_response = requests.get(file_url)
-        img_bytes = img_response.content
+        # Скачиваем фото
+        response = requests.get(file_url)
+        image_bytes = response.content
 
-        headers = {"Authorization": f"Bearer {HF_TOKEN}"}
-        api_url = f"https://api-inference.huggingface.co/models/{IMG2IMG_MODEL}"
-        b64_img = base64.b64encode(img_bytes).decode("utf-8")
-        payload = {
-            "inputs": {
-                "image": b64_img,
-                "prompt": prompt,
-                "strength": 0.75,
-                "guidance_scale": 7.5
-            }
-        }
-        r = requests.post(api_url, headers=headers, json=payload, timeout=60)
-        if r.status_code != 200:
-            raise Exception(f"HF API error: {r.text}")
-
-        await message.reply_photo(BufferedInputFile(r.content, filename="edited.jpg"))
+        # Используем image_to_image через клиент (избегаем DNS-ошибок)
+        output_image = hf_client.image_to_image(
+            image=image_bytes,
+            prompt=prompt,
+            model=IMG2IMG_MODEL,
+            strength=0.75,
+            guidance_scale=7.5
+        )
+        bio = BytesIO()
+        output_image.save(bio, format="JPEG")
+        bio.seek(0)
+        await message.reply_photo(
+            BufferedInputFile(bio.read(), filename="edited.jpg")
+        )
         await msg.delete()
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {e}")
