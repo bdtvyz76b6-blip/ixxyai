@@ -3,13 +3,14 @@ import asyncio
 import os
 from io import BytesIO
 import requests
+import aiohttp
 from aiogram import Router, types, F
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.enums import ParseMode
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile
-from config import FREE_LIMIT, ADMIN_ID, HF_TOKEN
+from config import FREE_LIMIT, ADMIN_ID
 from vip_manager import (
     is_vip, add_vip, can_use_free, use_free,
     load_vips, save_vips, load_free_usage
@@ -19,15 +20,6 @@ from payment import create_payment_url
 router = Router()
 base_webhook_url: str = None
 
-# Инициализация клиента Hugging Face
-from huggingface_hub import InferenceClient
-hf_client = InferenceClient(token=HF_TOKEN)
-
-# Проверенные бесплатные модели (работают с read-токеном)
-TEXT2IMG_MODEL = "runwayml/stable-diffusion-v1-5"   # генерация
-IMG2IMG_MODEL = "runwayml/stable-diffusion-v1-5"    # редактирование фото
-
-# Состояния для админки
 class AdminActions(StatesGroup):
     waiting_for_vip_id = State()
     waiting_for_remove_vip_id = State()
@@ -54,15 +46,14 @@ async def check_access(message: types.Message) -> bool:
 async def cmd_start(message: types.Message):
     await message.answer(
         "☂️ <b>ixxy AI</b> 🤖\n"
-        "Бесплатные нейросети на борту!\n\n"
+        "Генерирую картинки по твоему описанию!\n\n"
         f"🆓 Бесплатно: {FREE_LIMIT} генерации навсегда\n"
-        "💎 VIP (350₽ навсегда): безлимит + улучшенное качество\n\n"
+        "💎 VIP (350₽ навсегда): безлимит\n\n"
         "🎯 Команды:\n"
         "/gen твой запрос — создать картинку\n"
-        "/edit (отправь фото с подписью) — изменить фото\n"
         "/buy — купить VIP\n\n"
-        "💡 <i>Совет: пиши промпты подробно, например:\n"
-        "/gen фотореалистичный кот-самурай на фоне горящего города, 8k</i>",
+        "💡 <i>Пиши запросы подробно, например:\n"
+        "/gen киберпанк-кот на мотоцикле, неон, дождь, 8k</i>",
         parse_mode=ParseMode.HTML
     )
 
@@ -91,52 +82,28 @@ async def cmd_generate(message: types.Message):
         await message.answer("Напиши запрос: /gen киберпанк-кот на мотоцикле")
         return
 
-    msg = await message.answer("🎨 Генерирую... (бесплатно, до 30 сек)")
+    msg = await message.answer("🎨 Генерирую... (обычно до 15 секунд)")
     try:
-        # Генерация без автоулучшения (работает стабильно)
-        image = hf_client.text_to_image(prompt, model=TEXT2IMG_MODEL)
-        bio = BytesIO()
-        image.save(bio, format="JPEG")
-        bio.seek(0)
-        await message.reply_photo(
-            BufferedInputFile(bio.read(), filename="generated.jpg")
-        )
-        await msg.delete()
+        # Отправляем запрос в Pollinations.ai
+        safe_prompt = requests.utils.quote(prompt)
+        url = f"https://image.pollinations.ai/prompt/{safe_prompt}?width=1024&height=1024&nologo=true"
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as resp:
+                if resp.status == 200:
+                    image_bytes = await resp.read()
+                    await message.reply_photo(
+                        BufferedInputFile(image_bytes, filename="generated.jpg")
+                    )
+                    await msg.delete()
+                else:
+                    raise Exception(f"Ошибка сервера: {resp.status}")
     except Exception as e:
-        await msg.edit_text(f"❌ Ошибка: {e}")
+        await msg.edit_text(f"❌ Не получилось создать картинку. Попробуй позже.\nОшибка: {e}")
 
+# Редактирование фото отключено для стабильности
 @router.message(F.photo)
 async def handle_photo(message: types.Message):
-    if not await check_access(message):
-        return
-    prompt = message.caption or "улучшить качество, сделать красиво"
-    file_id = message.photo[-1].file_id
-    file = await message.bot.get_file(file_id)
-    file_url = f"https://api.telegram.org/file/bot{message.bot.token}/{file.file_path}"
-
-    msg = await message.answer("🔧 Обрабатываю фото... (до 40 сек)")
-    try:
-        # Скачиваем фото
-        response = requests.get(file_url)
-        image_bytes = response.content
-
-        # Используем image_to_image через клиент (избегаем DNS-ошибок)
-        output_image = hf_client.image_to_image(
-            image=image_bytes,
-            prompt=prompt,
-            model=IMG2IMG_MODEL,
-            strength=0.75,
-            guidance_scale=7.5
-        )
-        bio = BytesIO()
-        output_image.save(bio, format="JPEG")
-        bio.seek(0)
-        await message.reply_photo(
-            BufferedInputFile(bio.read(), filename="edited.jpg")
-        )
-        await msg.delete()
-    except Exception as e:
-        await msg.edit_text(f"❌ Ошибка: {e}")
+    await message.answer("🛠 Редактирование фото временно недоступно. Используй /gen для создания картинок.")
 
 # ==================== АДМИН-ПАНЕЛЬ ====================
 def admin_keyboard() -> InlineKeyboardMarkup:
@@ -225,7 +192,7 @@ async def process_give_vip_id(message: types.Message, state: FSMContext):
         add_vip(uid)
         await message.answer(f"✅ Пользователь {uid} теперь VIP!")
         try:
-            await message.bot.send_message(uid, "🎉 Тебе выдали вечный VIP! Используй /gen и /edit без ограничений.")
+            await message.bot.send_message(uid, "🎉 Тебе выдали вечный VIP! Используй /gen без ограничений.")
         except:
             pass
     await state.clear()
