@@ -21,7 +21,7 @@ router = Router()
 base_webhook_url: str = None
 
 client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-MODEL_NAME = "gemini-2.0-flash-exp"
+MODEL_NAME = "models/gemini-omni-flash"   # твоя модель
 IMAGE_CONFIG = GenerateContentConfig(response_modalities=["IMAGE", "TEXT"])
 
 class AdminActions(StatesGroup):
@@ -49,7 +49,7 @@ async def check_access(message: types.Message) -> bool:
 async def cmd_start(message: types.Message):
     await message.answer(
         "☂️ <b>ixxy AI</b> 🤖\n"
-        "Генерирую и редактирую с помощью Gemini 2.0 Flash!\n"
+        "Генерирую и редактирую с помощью Gemini Omni Flash!\n"
         "Бесплатно, мощно, на русском.\n\n"
         f"🆓 Бесплатно: {FREE_LIMIT} генераций навсегда\n"
         "💎 VIP (350₽ навсегда): безлимит + приоритет\n\n"
@@ -85,7 +85,7 @@ async def cmd_generate(message: types.Message):
         await message.answer("Напиши запрос: /gen киберпанк-кот")
         return
 
-    msg = await message.answer("🎨 Рисую через Gemini... (5–10 сек)")
+    msg = await message.answer("🎨 Рисую через Gemini Omni... (5–10 сек)")
     try:
         response = client.models.generate_content(
             model=MODEL_NAME,
@@ -113,7 +113,7 @@ async def handle_photo(message: types.Message):
     file = await message.bot.get_file(file_id)
     file_url = f"https://api.telegram.org/file/bot{message.bot.token}/{file.file_path}"
 
-    msg = await message.answer("🔧 Редактирую через Gemini... (5–10 сек)")
+    msg = await message.answer("🔧 Редактирую через Gemini Omni... (5–10 сек)")
     try:
         img_resp = requests.get(file_url)
         img_bytes = img_resp.content
