@@ -20,20 +20,16 @@ deepseek_client = OpenAI(
     base_url="https://api.deepseek.com/v1"
 )
 
-# Gemini для картинок
+# Gemini – ТОЛЬКО ДЛЯ КАРТИНОК (Nano Banana)
 from google import genai
-from google.genai.types import Part, GenerateContentConfig
+from google.genai.types import Part
 gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-IMAGE_MODEL = "models/gemini-2.0-flash"
-IMAGE_CONFIG = GenerateContentConfig(response_modalities=["IMAGE", "TEXT"])
+IMAGE_MODEL = "models/nano-banana-pro-preview"   # <-- та самая имба
 
 router = Router()
 base_webhook_url: str = None
 
-# Хранилище режимов пользователей (user_id -> режим)
 user_modes = {}
-
-# Режимы
 MODES = {
     "fast": {"name": "⚡ Быстрый", "temp": 0.3, "max_tokens": 200, "prompt": "Отвечай кратко и по делу."},
     "expert": {"name": "🧠 Эксперт", "temp": 0.5, "max_tokens": 800, "prompt": "Отвечай развёрнуто, как эксперт."},
@@ -68,14 +64,14 @@ def get_mode(user_id):
 async def cmd_start(message: types.Message):
     await message.answer(
         "☂️ <b>ixxy AI</b> 🤖\n"
-        "Выбирай режим и общайся!\n\n"
+        "DeepSeek для общения, Nano Banana для картинок!\n\n"
         "🎯 Команды:\n"
-        "/mode — выбор режима (Быстрый/Эксперт/Творческий)\n"
+        "/mode — выбрать режим (Быстрый/Эксперт/Творческий)\n"
         "/ask вопрос — спросить DeepSeek\n"
-        "/gen запрос — создать картинку\n"
+        "/gen запрос — создать картинку (как Midjourney)\n"
         "/edit (фото+подпись) — изменить фото\n"
-        "/buy — купить VIP (безлимит картинок)\n\n"
-        f"🆓 Текстовые запросы всегда бесплатны. Картинок бесплатно: {FREE_LIMIT}",
+        "/buy — купить VIP (безлимит)\n\n"
+        f"🆓 Бесплатно: {FREE_LIMIT} картинок, текстовые запросы всегда безлимитны",
         parse_mode=ParseMode.HTML
     )
 
@@ -132,7 +128,6 @@ async def cmd_ask(message: types.Message):
             max_tokens=mode['max_tokens']
         )
         answer = response.choices[0].message.content
-        # Разбиваем длинные ответы
         for i in range(0, len(answer), 4000):
             chunk = answer[i:i+4000]
             if i == 0:
@@ -142,7 +137,7 @@ async def cmd_ask(message: types.Message):
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка DeepSeek: {e}")
 
-# Генерация картинок (Gemini) – без изменений
+# --- Картинки через Nano Banana ---
 @router.message(Command("gen"))
 async def cmd_generate(message: types.Message):
     if not await check_access(message):
@@ -152,12 +147,12 @@ async def cmd_generate(message: types.Message):
         await message.answer("Напиши запрос: /gen киберпанк-кот")
         return
 
-    msg = await message.answer("🎨 Генерирую...")
+    msg = await message.answer("🎨 Рисую через Nano Banana...")
     try:
         response = gemini_client.models.generate_content(
             model=IMAGE_MODEL,
-            contents=f"Создай высококачественное изображение: {prompt}",
-            config=IMAGE_CONFIG
+            contents=f"Создай высококачественное изображение: {prompt}"
+            # без config, Nano Banana сама возвращает картинку
         )
         img_bytes = None
         for part in response.candidates[0].content.parts:
@@ -165,8 +160,8 @@ async def cmd_generate(message: types.Message):
                 img_bytes = part.inline_data.data
                 break
         if not img_bytes:
-            raise Exception("Нет изображения в ответе")
-        await message.reply_photo(BufferedInputFile(img_bytes, filename="gen.jpg"))
+            raise Exception("Модель не вернула изображение. Попробуй переформулировать запрос.")
+        await message.reply_photo(BufferedInputFile(img_bytes, filename="nano.jpg"))
         await msg.delete()
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {e}")
@@ -175,12 +170,12 @@ async def cmd_generate(message: types.Message):
 async def handle_photo(message: types.Message):
     if not await check_access(message):
         return
-    prompt = message.caption or "сделай стильно"
+    prompt = message.caption or "сделай стильно, улучши качество"
     file_id = message.photo[-1].file_id
     file = await message.bot.get_file(file_id)
     file_url = f"https://api.telegram.org/file/bot{message.bot.token}/{file.file_path}"
 
-    msg = await message.answer("🔧 Редактирую...")
+    msg = await message.answer("🔧 Редактирую через Nano Banana...")
     try:
         img_resp = requests.get(file_url)
         img_bytes = img_resp.content
@@ -190,8 +185,7 @@ async def handle_photo(message: types.Message):
         ]
         response = gemini_client.models.generate_content(
             model=IMAGE_MODEL,
-            contents=contents,
-            config=IMAGE_CONFIG
+            contents=contents
         )
         result_bytes = None
         for part in response.candidates[0].content.parts:
@@ -199,10 +193,11 @@ async def handle_photo(message: types.Message):
                 result_bytes = part.inline_data.data
                 break
         if not result_bytes:
-            raise Exception("Не получено")
+            raise Exception("Не удалось отредактировать фото.")
         await message.reply_photo(BufferedInputFile(result_bytes, filename="edited.jpg"))
         await msg.delete()
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {e}")
 
-# Админ-панель остаётся прежней (можно вставить старую)
+# ==================== АДМИН-ПАНЕЛЬ (без изменений) ====================
+# (вставь сюда свою старую админку, она не менялась)
