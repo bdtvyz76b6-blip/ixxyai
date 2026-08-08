@@ -1,4 +1,4 @@
-import os, requests, asyncio
+import os, requests, asyncio, base64, time
 from io import BytesIO
 from aiogram import Router, types, F
 from aiogram.filters import Command, StateFilter
@@ -13,18 +13,22 @@ from vip_manager import (
 )
 from payment import create_payment_url
 
-# DeepSeek
-from openai import OpenAI
-deepseek_client = OpenAI(
-    api_key=os.getenv("DEEPSEEK_API_KEY"),
-    base_url="https://api.deepseek.com/v1"
-)
-
-# Gemini – ТОЛЬКО ДЛЯ КАРТИНОК (Nano Banana)
+# Gemini (только для текста)
 from google import genai
-from google.genai.types import Part
+from google.genai.types import GenerateContentConfig
 gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-IMAGE_MODEL = "models/nano-banana-pro-preview"   # <-- та самая имба
+TEXT_MODEL = "models/gemini-2.0-flash"
+
+# Replicate (если есть токен)
+import replicate
+replicate_client = None
+if os.getenv("REPLICATE_API_TOKEN"):
+    replicate_client = replicate.Client(api_token=os.getenv("REPLICATE_API_TOKEN"))
+REPLICATE_MODEL = "stability-ai/sdxl-lightning:8bea9e8a4d4c3a7e7a5f8f2e8b3c6d1e9a0b4c5d6e7f8a9b0c1d2e3f4a5b6c7"
+
+# Stable Horde (запасной)
+HORDE_API = "https://stablehorde.net/api/v2/generate/sync"
+HORDE_MODEL = "stable_diffusion_xl"
 
 router = Router()
 base_webhook_url: str = None
@@ -59,19 +63,58 @@ async def check_access(message: types.Message) -> bool:
 def get_mode(user_id):
     return user_modes.get(user_id, "fast")
 
+# ==================== ГЕНЕРАЦИЯ КАРТИНОК (УМНАЯ) ====================
+async def generate_image_smart(prompt: str) -> bytes:
+    # 1. Pollinations (всегда работает, бесплатно, без ключа)
+    try:
+        encoded_prompt = requests.utils.quote(prompt)
+        url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1024&nologo=true"
+        resp = requests.get(url, timeout=30)
+        if resp.status_code == 200:
+            return resp.content
+    except:
+        pass
+
+    # 2. Stable Horde (бесплатно, без регистрации)
+    try:
+        payload = {
+            "prompt": f"{prompt}, highly detailed",
+            "model": HORDE_MODEL,
+            "params": {"width": 1024, "height": 1024, "steps": 20}
+        }
+        resp = requests.post(HORDE_API, json=payload, timeout=60)
+        data = resp.json()
+        if "img" in data:
+            return base64.b64decode(data["img"])
+    except:
+        pass
+
+    # 3. Replicate (если есть токен)
+    if replicate_client:
+        try:
+            output = replicate_client.run(
+                REPLICATE_MODEL,
+                input={"prompt": f"{prompt}, cinematic, 8k", "width": 1024, "height": 1024}
+            )
+            img_url = output[0] if isinstance(output, list) else output
+            return requests.get(img_url).content
+        except:
+            pass
+
+    raise Exception("Все сервисы недоступны. Попробуй позже.")
+
 # ==================== КОМАНДЫ ====================
 @router.message(Command("start"))
 async def cmd_start(message: types.Message):
     await message.answer(
         "☂️ <b>ixxy AI</b> 🤖\n"
-        "DeepSeek для общения, Nano Banana для картинок!\n\n"
+        "Неубиваемый бот: сам переключаю генераторы!\n\n"
         "🎯 Команды:\n"
         "/mode — выбрать режим (Быстрый/Эксперт/Творческий)\n"
-        "/ask вопрос — спросить DeepSeek\n"
-        "/gen запрос — создать картинку (как Midjourney)\n"
-        "/edit (фото+подпись) — изменить фото\n"
-        "/buy — купить VIP (безлимит)\n\n"
-        f"🆓 Бесплатно: {FREE_LIMIT} картинок, текстовые запросы всегда безлимитны",
+        "/ask вопрос — спросить\n"
+        "/gen запрос — картинка\n"
+        "/buy — купить VIP\n\n"
+        f"🆓 Бесплатно: {FREE_LIMIT} картинок, текст безлимит",
         parse_mode=ParseMode.HTML
     )
 
@@ -118,16 +161,16 @@ async def cmd_ask(message: types.Message):
     mode = MODES[get_mode(message.from_user.id)]
     msg = await message.answer(f"🧠 {mode['name']} думает...")
     try:
-        response = deepseek_client.chat.completions.create(
-            model="deepseek-chat",
-            messages=[
-                {"role": "system", "content": mode['prompt']},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=mode['temp'],
-            max_tokens=mode['max_tokens']
+        full_prompt = f"{mode['prompt']}\n\nПользователь: {prompt}"
+        response = gemini_client.models.generate_content(
+            model=TEXT_MODEL,
+            contents=full_prompt,
+            config=GenerateContentConfig(
+                temperature=mode['temp'],
+                max_output_tokens=mode['max_tokens']
+            )
         )
-        answer = response.choices[0].message.content
+        answer = response.text
         for i in range(0, len(answer), 4000):
             chunk = answer[i:i+4000]
             if i == 0:
@@ -135,9 +178,8 @@ async def cmd_ask(message: types.Message):
             else:
                 await message.answer(chunk)
     except Exception as e:
-        await msg.edit_text(f"❌ Ошибка DeepSeek: {e}")
+        await msg.edit_text(f"❌ Ошибка: {e}")
 
-# --- Картинки через Nano Banana ---
 @router.message(Command("gen"))
 async def cmd_generate(message: types.Message):
     if not await check_access(message):
@@ -147,57 +189,18 @@ async def cmd_generate(message: types.Message):
         await message.answer("Напиши запрос: /gen киберпанк-кот")
         return
 
-    msg = await message.answer("🎨 Рисую через Nano Banana...")
+    msg = await message.answer("🎨 Генерирую (ищу рабочий сервис)...")
     try:
-        response = gemini_client.models.generate_content(
-            model=IMAGE_MODEL,
-            contents=f"Создай высококачественное изображение: {prompt}"
-            # без config, Nano Banana сама возвращает картинку
-        )
-        img_bytes = None
-        for part in response.candidates[0].content.parts:
-            if part.inline_data and part.inline_data.mime_type.startswith("image/"):
-                img_bytes = part.inline_data.data
-                break
-        if not img_bytes:
-            raise Exception("Модель не вернула изображение. Попробуй переформулировать запрос.")
-        await message.reply_photo(BufferedInputFile(img_bytes, filename="nano.jpg"))
+        img_bytes = await generate_image_smart(prompt)
+        await message.reply_photo(BufferedInputFile(img_bytes, filename="img.jpg"))
         await msg.delete()
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {e}")
 
+# Редактирование фото временно отключено (можно добавить позже)
 @router.message(F.photo)
 async def handle_photo(message: types.Message):
-    if not await check_access(message):
-        return
-    prompt = message.caption or "сделай стильно, улучши качество"
-    file_id = message.photo[-1].file_id
-    file = await message.bot.get_file(file_id)
-    file_url = f"https://api.telegram.org/file/bot{message.bot.token}/{file.file_path}"
+    await message.answer("🛠 Редактирование фото временно недоступно. Используй /gen.")
 
-    msg = await message.answer("🔧 Редактирую через Nano Banana...")
-    try:
-        img_resp = requests.get(file_url)
-        img_bytes = img_resp.content
-        contents = [
-            Part.from_bytes(data=img_bytes, mime_type="image/jpeg"),
-            f"Измени изображение: {prompt}"
-        ]
-        response = gemini_client.models.generate_content(
-            model=IMAGE_MODEL,
-            contents=contents
-        )
-        result_bytes = None
-        for part in response.candidates[0].content.parts:
-            if part.inline_data and part.inline_data.mime_type.startswith("image/"):
-                result_bytes = part.inline_data.data
-                break
-        if not result_bytes:
-            raise Exception("Не удалось отредактировать фото.")
-        await message.reply_photo(BufferedInputFile(result_bytes, filename="edited.jpg"))
-        await msg.delete()
-    except Exception as e:
-        await msg.edit_text(f"❌ Ошибка: {e}")
-
-# ==================== АДМИН-ПАНЕЛЬ (без изменений) ====================
-# (вставь сюда свою старую админку, она не менялась)
+# ==================== АДМИН-ПАНЕЛЬ (как раньше) ====================
+# ... вставь свою старую админку без изменений ...
