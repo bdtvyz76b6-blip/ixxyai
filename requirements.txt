@@ -5,3 +5,4 @@ aiohttp
 huggingface_hub
 Pillow
 google-genai
+openai
