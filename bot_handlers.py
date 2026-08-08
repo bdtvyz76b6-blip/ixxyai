@@ -1,4 +1,3 @@
-# bot_handlers.py
 import os
 import requests
 from io import BytesIO
@@ -15,16 +14,15 @@ from vip_manager import (
 )
 from payment import create_payment_url
 
-# Новый импорт Google Gemini
 from google import genai
-from google.genai.types import Part
+from google.genai.types import Part, GenerateContentConfig
 
 router = Router()
 base_webhook_url: str = None
 
-# Настройка клиента
 client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-MODEL_NAME = "gemini-2.0-flash-exp-image-generation"
+MODEL_NAME = "gemini-2.0-flash-exp"
+IMAGE_CONFIG = GenerateContentConfig(response_modalities=["IMAGE", "TEXT"])
 
 class AdminActions(StatesGroup):
     waiting_for_vip_id = State()
@@ -33,7 +31,6 @@ class AdminActions(StatesGroup):
 def is_admin(user_id: int) -> bool:
     return user_id == ADMIN_ID
 
-# ==================== ПРОВЕРКА ДОСТУПА ====================
 async def check_access(message: types.Message) -> bool:
     uid = message.from_user.id
     if is_vip(uid):
@@ -48,13 +45,12 @@ async def check_access(message: types.Message) -> bool:
     )
     return False
 
-# ==================== КОМАНДЫ ====================
 @router.message(Command("start"))
 async def cmd_start(message: types.Message):
     await message.answer(
         "☂️ <b>ixxy AI</b> 🤖\n"
-        "Генерирую и редактирую через Google Gemini 2.0 Flash!\n"
-        "Бесплатно, мощно, по-русски.\n\n"
+        "Генерирую и редактирую с помощью Gemini 2.0 Flash!\n"
+        "Бесплатно, мощно, на русском.\n\n"
         f"🆓 Бесплатно: {FREE_LIMIT} генераций навсегда\n"
         "💎 VIP (350₽ навсегда): безлимит + приоритет\n\n"
         "🎯 Команды:\n"
@@ -89,11 +85,12 @@ async def cmd_generate(message: types.Message):
         await message.answer("Напиши запрос: /gen киберпанк-кот")
         return
 
-    msg = await message.answer("🎨 Рисую через Gemini... (5-10 сек)")
+    msg = await message.answer("🎨 Рисую через Gemini... (5–10 сек)")
     try:
         response = client.models.generate_content(
             model=MODEL_NAME,
-            contents=f"Generate a high-quality, detailed image of: {prompt}"
+            contents=f"Создай высококачественное, детализированное изображение: {prompt}",
+            config=IMAGE_CONFIG
         )
         img_bytes = None
         for part in response.candidates[0].content.parts:
@@ -101,7 +98,7 @@ async def cmd_generate(message: types.Message):
                 img_bytes = part.inline_data.data
                 break
         if not img_bytes:
-            raise Exception("Модель не вернула изображение. Попробуй другой запрос.")
+            raise Exception("Модель не вернула изображение. Попробуй переформулировать запрос.")
         await message.reply_photo(BufferedInputFile(img_bytes, filename="gemini.jpg"))
         await msg.delete()
     except Exception as e:
@@ -111,12 +108,12 @@ async def cmd_generate(message: types.Message):
 async def handle_photo(message: types.Message):
     if not await check_access(message):
         return
-    prompt = message.caption or "улучшить качество, сделать стильно"
+    prompt = message.caption or "сделай стильно, улучши качество"
     file_id = message.photo[-1].file_id
     file = await message.bot.get_file(file_id)
     file_url = f"https://api.telegram.org/file/bot{message.bot.token}/{file.file_path}"
 
-    msg = await message.answer("🔧 Редактирую через Gemini... (5-10 сек)")
+    msg = await message.answer("🔧 Редактирую через Gemini... (5–10 сек)")
     try:
         img_resp = requests.get(file_url)
         img_bytes = img_resp.content
@@ -127,7 +124,8 @@ async def handle_photo(message: types.Message):
         ]
         response = client.models.generate_content(
             model=MODEL_NAME,
-            contents=contents
+            contents=contents,
+            config=IMAGE_CONFIG
         )
         result_bytes = None
         for part in response.candidates[0].content.parts:
