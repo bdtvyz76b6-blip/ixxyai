@@ -13,20 +13,14 @@ from vip_manager import (
 )
 from payment import create_payment_url
 
-# Gemini (только для текста)
+# Gemini (текст + картинки)
 from google import genai
-from google.genai.types import GenerateContentConfig
+from google.genai.types import Part, GenerateContentConfig
 gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 TEXT_MODEL = "models/gemini-2.0-flash"
+IMAGE_MODEL = "models/nano-banana-pro-preview"   # качество 🔥
 
-# Replicate (если есть токен)
-import replicate
-replicate_client = None
-if os.getenv("REPLICATE_API_TOKEN"):
-    replicate_client = replicate.Client(api_token=os.getenv("REPLICATE_API_TOKEN"))
-REPLICATE_MODEL = "stability-ai/sdxl-lightning:8bea9e8a4d4c3a7e7a5f8f2e8b3c6d1e9a0b4c5d6e7f8a9b0c1d2e3f4a5b6c7"
-
-# Stable Horde (запасной)
+# Stable Horde (запасной, если Gemini упал)
 HORDE_API = "https://stablehorde.net/api/v2/generate/sync"
 HORDE_MODEL = "stable_diffusion_xl"
 
@@ -63,22 +57,24 @@ async def check_access(message: types.Message) -> bool:
 def get_mode(user_id):
     return user_modes.get(user_id, "fast")
 
-# ==================== ГЕНЕРАЦИЯ КАРТИНОК (УМНАЯ) ====================
+# ==================== ГЕНЕРАЦИЯ КАРТИНОК ====================
 async def generate_image_smart(prompt: str) -> bytes:
-    # 1. Pollinations (всегда работает, бесплатно, без ключа)
+    # 1. Nano Banana (основной)
     try:
-        encoded_prompt = requests.utils.quote(prompt)
-        url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1024&nologo=true"
-        resp = requests.get(url, timeout=30)
-        if resp.status_code == 200:
-            return resp.content
+        response = gemini_client.models.generate_content(
+            model=IMAGE_MODEL,
+            contents=f"Создай высококачественное, детализированное изображение: {prompt}"
+        )
+        for part in response.candidates[0].content.parts:
+            if part.inline_data and part.inline_data.mime_type.startswith("image/"):
+                return part.inline_data.data
     except:
         pass
 
-    # 2. Stable Horde (бесплатно, без регистрации)
+    # 2. Stable Horde (запасной)
     try:
         payload = {
-            "prompt": f"{prompt}, highly detailed",
+            "prompt": f"{prompt}, highly detailed, cinematic",
             "model": HORDE_MODEL,
             "params": {"width": 1024, "height": 1024, "steps": 20}
         }
@@ -89,26 +85,14 @@ async def generate_image_smart(prompt: str) -> bytes:
     except:
         pass
 
-    # 3. Replicate (если есть токен)
-    if replicate_client:
-        try:
-            output = replicate_client.run(
-                REPLICATE_MODEL,
-                input={"prompt": f"{prompt}, cinematic, 8k", "width": 1024, "height": 1024}
-            )
-            img_url = output[0] if isinstance(output, list) else output
-            return requests.get(img_url).content
-        except:
-            pass
-
-    raise Exception("Все сервисы недоступны. Попробуй позже.")
+    raise Exception("Сервисы генерации временно недоступны. Попробуй через минуту.")
 
 # ==================== КОМАНДЫ ====================
 @router.message(Command("start"))
 async def cmd_start(message: types.Message):
     await message.answer(
         "☂️ <b>ixxy AI</b> 🤖\n"
-        "Неубиваемый бот: сам переключаю генераторы!\n\n"
+        "Nano Banana для картинок, Gemini для текста!\n\n"
         "🎯 Команды:\n"
         "/mode — выбрать режим (Быстрый/Эксперт/Творческий)\n"
         "/ask вопрос — спросить\n"
@@ -189,7 +173,7 @@ async def cmd_generate(message: types.Message):
         await message.answer("Напиши запрос: /gen киберпанк-кот")
         return
 
-    msg = await message.answer("🎨 Генерирую (ищу рабочий сервис)...")
+    msg = await message.answer("🎨 Генерирую через Nano Banana...")
     try:
         img_bytes = await generate_image_smart(prompt)
         await message.reply_photo(BufferedInputFile(img_bytes, filename="img.jpg"))
@@ -197,7 +181,7 @@ async def cmd_generate(message: types.Message):
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {e}")
 
-# Редактирование фото временно отключено (можно добавить позже)
+# Редактирование пока отключено (можно добавить через Gemini при необходимости)
 @router.message(F.photo)
 async def handle_photo(message: types.Message):
     await message.answer("🛠 Редактирование фото временно недоступно. Используй /gen.")
