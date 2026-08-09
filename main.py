@@ -4,7 +4,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 from bot_handlers import router
 from config import BOT_TOKEN
-from payment import verify_signature
+from payment import verify_webhook_signature   # правильное имя функции
 from vip_manager import add_vip
 
 bot = Bot(token=BOT_TOKEN)
@@ -14,7 +14,7 @@ dp.include_router(router)
 async def handle_cashera(request):
     body = await request.read()
     signature = request.headers.get("X-Cashera-Signature", "")
-    if not verify_signature(body, signature):
+    if not verify_webhook_signature(body, signature):
         return web.Response(status=403)
     try:
         data = await request.json()
