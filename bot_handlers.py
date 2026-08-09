@@ -1,4 +1,4 @@
-# bot_handlers.py (Groq + Tesseract OCR + контекст + гарантированно жирный ответ + красивый профиль)
+# bot_handlers.py (Groq + Tesseract OCR + контекст + гарантированно жирный ответ + красивый профиль + скрытая админка)
 import os, datetime
 from io import BytesIO
 import requests as req
@@ -100,6 +100,7 @@ async def start(message: types.Message):
         "/buy — купить VIP\n"
         "/profile — статистика"
     )
+    # Админ-панель видна только админу
     if is_admin(message.from_user.id):
         base_text += "\n/admin — админ-панель"
     await message.answer(base_text, parse_mode=ParseMode.HTML)
@@ -188,7 +189,7 @@ async def handle_photo(message: types.Message):
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка обработки фото: {e}")
 
-# --- Админ-панель ---
+# --- Админ-панель (доступ строго по ID) ---
 def admin_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
@@ -204,6 +205,9 @@ async def admin_panel(message: types.Message):
 
 @router.callback_query(F.data == "admin_stats")
 async def admin_stats(callback: types.CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ Доступ запрещён", show_alert=True)
+        return
     vips = load_vips()
     text = f"📊 VIP: {len(vips)}\n👥 Сегодня пользователей: {len(user_requests)}"
     await callback.message.edit_text(text)
@@ -211,6 +215,9 @@ async def admin_stats(callback: types.CallbackQuery):
 
 @router.callback_query(F.data == "admin_give_vip")
 async def admin_give_vip_start(callback: types.CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ Доступ запрещён", show_alert=True)
+        return
     await state.set_state(AdminActions.waiting_for_vip_id)
     await callback.message.edit_text("➕ Введите ID пользователя:")
     await callback.answer()
@@ -234,6 +241,9 @@ async def process_give_vip(message: types.Message, state: FSMContext):
 
 @router.callback_query(F.data == "admin_list_vip")
 async def list_vip(callback: types.CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ Доступ запрещён", show_alert=True)
+        return
     vips = load_vips()
     text = "👑 VIP:\n" + "\n".join(f"• {v}" for v in vips) if vips else "нет"
     await callback.message.edit_text(text)
