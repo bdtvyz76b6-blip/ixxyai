@@ -1,5 +1,5 @@
-# bot_handlers.py (Groq + OCR, админка без конфликтов)
-import os, datetime, base64
+import os, datetime
+from io import BytesIO
 import requests as req
 from aiogram import Router, types, F
 from aiogram.filters import Command, StateFilter
@@ -7,11 +7,13 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.enums import ParseMode
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile
-from config import BOT_TOKEN, ADMIN_ID, GROQ_API_KEY, OCR_API_KEY, FREE_REQUESTS_PER_DAY, VIP_PRICE
+from config import BOT_TOKEN, ADMIN_ID, GROQ_API_KEY, FREE_REQUESTS_PER_DAY, VIP_PRICE
 from vip_manager import is_vip, add_vip, load_vips, save_vips
 from payment import create_payment_url
 
 from groq import Groq
+from PIL import Image
+import pytesseract
 
 groq_client = Groq(api_key=GROQ_API_KEY)
 
@@ -62,47 +64,32 @@ async def solve_groq(prompt: str) -> str:
     except Exception as e:
         return f"❌ Ошибка при решении: {e}"
 
-async def ocr_space(image_bytes: bytes) -> str:
-    """Распознаёт текст с изображения через OCR.space"""
+def ocr_tesseract(image_bytes: bytes) -> str:
+    """Распознаёт текст с изображения через Tesseract (без ключа)"""
     try:
-        apikey = OCR_API_KEY if OCR_API_KEY else "helloworld"
-        payload = {
-            "apikey": apikey,
-            "language": "rus+eng",
-            "isOverlayRequired": False,
-            "scale": True,
-        }
-        img_base64 = base64.b64encode(image_bytes).decode("utf-8")
-        resp = req.post(
-            "https://api.ocr.space/parse/image",
-            data={"base64Image": f"data:image/jpeg;base64,{img_base64}", **payload},
-            timeout=15
-        )
-        data = resp.json()
-        if data.get("IsErroredOnProcessing"):
-            return None
-        text = ""
-        for result in data.get("ParsedResults", []):
-            text += result.get("ParsedText", "")
+        img = Image.open(BytesIO(image_bytes))
+        # Указываем языки: русский + английский
+        text = pytesseract.image_to_string(img, lang='rus+eng')
         return text.strip()
     except:
-        return None
+        return ""
 
 @router.message(Command("start"))
 async def start(message: types.Message):
-    await message.answer(
+    base_text = (
         "📚 <b>ixxy AI ГДЗ</b> 🤖\n"
-        "Работаю на Groq + OCR! Бесплатно и умно.\n\n"
+        "Работаю на Groq + Tesseract OCR! Бесплатно и без лимитов.\n\n"
         "🎯 Как пользоваться:\n"
         "• Отправь текстовое сообщение с задачей\n"
         "• Отправь фото с задачей — распознаю и решу!\n\n"
         f"🆓 Бесплатно: {FREE_REQUESTS_PER_DAY} задач в день\n"
         f"💎 VIP ({VIP_PRICE}₽ навсегда): безлимит\n\n"
         "/buy — купить VIP\n"
-        "/profile — статистика\n"
-        "/admin — админ-панель",
-        parse_mode=ParseMode.HTML
+        "/profile — статистика"
     )
+    if is_admin(message.from_user.id):
+        base_text += "\n/admin — админ-панель"
+    await message.answer(base_text, parse_mode=ParseMode.HTML)
 
 @router.message(Command("buy"))
 async def buy(message: types.Message):
@@ -132,9 +119,12 @@ async def profile(message: types.Message):
         f"📆 Сегодня решено: {used}/{FREE_REQUESTS_PER_DAY}"
     )
 
-# ⚡ Вот главное исправление: StateFilter(None) — решаем только если нет активного стейта
-@router.message(F.text & ~F.text.startswith("/"), StateFilter(None))
-async def solve_text(message: types.Message):
+@router.message(F.text & ~F.text.startswith("/"))
+async def solve_text(message: types.Message, state: FSMContext):
+    # Не решаем, если бот ждёт ввода от админа (например, ID для VIP)
+    current_state = await state.get_state()
+    if current_state is not None:
+        return  # просто игнорируем, не отвечаем
     if not await check_access(message):
         return
     prompt = message.text
@@ -158,11 +148,9 @@ async def handle_photo(message: types.Message):
     msg = await message.answer("📷 Распознаю текст...")
     try:
         img_data = req.get(file_url).content
-        text = await ocr_space(img_data)
+        text = ocr_tesseract(img_data)
         if not text:
-            await msg.edit_text(
-                "❌ Не удалось распознать текст. Пожалуйста, напиши задачу вручную."
-            )
+            await msg.edit_text("❌ Не удалось распознать текст. Попробуй более чёткое фото или напиши вручную.")
             return
         await msg.edit_text(f"📝 Распознано: {text[:200]}...\n🧠 Решаю...")
         answer = await solve_groq(text)
