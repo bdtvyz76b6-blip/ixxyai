@@ -1,11 +1,11 @@
 import os
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
+ADMIN_ID = int(os.getenv("ADMIN_ID", 6312016802))   # твой ID, оставь как есть
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")        # обязательно добавь в Railway!
 CASHERA_API_KEY = os.getenv("CASHERA_API_KEY")
-CASHERA_SHOP_ID = os.getenv("CASHERA_SHOP_ID", "")
 CASHERA_WEBHOOK_SECRET = os.getenv("CASHERA_WEBHOOK_SECRET", "")
-VIP_PRICE_RUB = 350
-FREE_LIMIT = 2
-ADMIN_ID = 6312016802
-HF_TOKEN = os.getenv("HF_TOKEN")
+
+# Настройки ГДЗ-бота
+FREE_REQUESTS_PER_DAY = 3   # бесплатных решений в день
+VIP_PRICE = 350              # цена VIP в рублях
