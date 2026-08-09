@@ -8,7 +8,7 @@ from aiogram.fsm.state import StatesGroup, State
 from aiogram.enums import ParseMode
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile
 from config import BOT_TOKEN, ADMIN_ID, GEMINI_API_KEY, FREE_REQUESTS_PER_DAY, VIP_PRICE
-from vip_manager import is_vip, add_vip, can_use_free, use_free, load_vips, save_vips
+from vip_manager import is_vip, add_vip, load_vips, save_vips
 from payment import create_payment_url
 
 from google import genai
@@ -59,7 +59,6 @@ async def solve_math(prompt: str) -> str:
     except Exception as e:
         return f"❌ Ошибка при решении: {e}"
 
-# ==================== СТАРТ ====================
 @router.message(Command("start"))
 async def start(message: types.Message):
     await message.answer(
@@ -105,7 +104,6 @@ async def profile(message: types.Message):
         f"📆 Сегодня решено: {used}/{FREE_REQUESTS_PER_DAY}"
     )
 
-# ==================== РЕШАТЕЛЬ ТЕКСТА ====================
 @router.message(F.text & ~F.text.startswith("/"))
 async def solve_text(message: types.Message):
     if not await check_access(message):
@@ -115,7 +113,6 @@ async def solve_text(message: types.Message):
     answer = await solve_math(prompt)
     await msg.edit_text(answer)
 
-# ==================== РЕШАТЕЛЬ ФОТО ====================
 @router.message(F.photo)
 async def handle_photo(message: types.Message):
     if not await check_access(message):
@@ -141,7 +138,6 @@ async def handle_photo(message: types.Message):
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка обработки фото: {e}")
 
-# ==================== АДМИН-ПАНЕЛЬ ====================
 def admin_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
