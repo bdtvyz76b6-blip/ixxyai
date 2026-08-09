@@ -7,15 +7,16 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.enums import ParseMode
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile
-from config import BOT_TOKEN, ADMIN_ID, GEMINI_API_KEY, FREE_REQUESTS_PER_DAY, VIP_PRICE
+from config import BOT_TOKEN, ADMIN_ID, DEEPSEEK_API_KEY, FREE_REQUESTS_PER_DAY, VIP_PRICE
 from vip_manager import is_vip, add_vip, load_vips, save_vips
 from payment import create_payment_url
 
-from google import genai
-from google.genai.types import Part
+from openai import OpenAI
 
-gemini_client = genai.Client(api_key=GEMINI_API_KEY)
-MODEL = "models/gemini-2.0-flash"
+deepseek_client = OpenAI(
+    api_key=DEEPSEEK_API_KEY,
+    base_url="https://api.deepseek.com/v1"
+)
 
 router = Router()
 base_webhook_url: str = None
@@ -49,13 +50,18 @@ async def check_access(message: types.Message) -> bool:
     )
     return False
 
-async def solve_math(prompt: str) -> str:
+async def solve_deepseek(prompt: str) -> str:
     try:
-        response = gemini_client.models.generate_content(
-            model=MODEL,
-            contents=f"Реши задачу подробно, по шагам, и дай окончательный ответ. Задача: {prompt}"
+        response = deepseek_client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[
+                {"role": "system", "content": "Ты — лучший решатель задач. Решай подробно, шаг за шагом, и выдавай окончательный ответ."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.3,
+            max_tokens=1000
         )
-        return response.text
+        return response.choices[0].message.content
     except Exception as e:
         return f"❌ Ошибка при решении: {e}"
 
@@ -63,16 +69,15 @@ async def solve_math(prompt: str) -> str:
 async def start(message: types.Message):
     await message.answer(
         "📚 <b>ixxy AI ГДЗ</b> 🤖\n"
-        "Просто напиши задачу текстом или пришли фото — я решу!\n\n"
-        f"🆓 Бесплатно: {FREE_REQUESTS_PER_DAY} задач в день\n"
-        f"💎 VIP ({VIP_PRICE}₽ навсегда): безлимит\n\n"
+        "Работаю на DeepSeek — бесплатно и умно!\n\n"
         "🎯 Как пользоваться:\n"
         "• Отправь текстовое сообщение с задачей\n"
-        "• Отправь фото (можно с подписью)\n\n"
-        "📋 Другие команды:\n"
+        "• Отправь фото (пока попрошу написать текстом, OCR будет позже)\n\n"
+        f"🆓 Бесплатно: {FREE_REQUESTS_PER_DAY} задач в день\n"
+        f"💎 VIP ({VIP_PRICE}₽ навсегда): безлимит\n\n"
         "/buy — купить VIP\n"
-        "/profile — моя статистика\n"
-        "/admin — для администратора",
+        "/profile — статистика\n"
+        "/admin — админ-панель",
         parse_mode=ParseMode.HTML
     )
 
@@ -109,34 +114,21 @@ async def solve_text(message: types.Message):
     if not await check_access(message):
         return
     prompt = message.text
-    msg = await message.answer("🧠 Решаю...")
-    answer = await solve_math(prompt)
-    await msg.edit_text(answer)
+    msg = await message.answer("🧠 Решаю через DeepSeek...")
+    answer = await solve_deepseek(prompt)
+    for i in range(0, len(answer), 4000):
+        chunk = answer[i:i+4000]
+        if i == 0:
+            await msg.edit_text(chunk)
+        else:
+            await message.answer(chunk)
 
 @router.message(F.photo)
 async def handle_photo(message: types.Message):
-    if not await check_access(message):
-        return
-    file_id = message.photo[-1].file_id
-    file = await message.bot.get_file(file_id)
-    file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file.file_path}"
-    caption = message.caption or "Реши задачу на фото"
-
-    msg = await message.answer("📷 Распознаю и решаю...")
-    try:
-        img_data = req.get(file_url).content
-        parts = [
-            Part.from_bytes(data=img_data, mime_type="image/jpeg"),
-            caption
-        ]
-        response = gemini_client.models.generate_content(
-            model=MODEL,
-            contents=parts
-        )
-        answer = response.text
-        await msg.edit_text(answer)
-    except Exception as e:
-        await msg.edit_text(f"❌ Ошибка обработки фото: {e}")
+    await message.answer(
+        "📷 Пока я не умею распознавать текст с фото, но скоро научусь! "
+        "Пожалуйста, напиши задачу текстом — я решу."
+    )
 
 def admin_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
