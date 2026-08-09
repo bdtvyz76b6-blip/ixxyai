@@ -1,4 +1,4 @@
-# bot_handlers.py (Groq + Tesseract OCR + контекст)
+# bot_handlers.py (Groq + Tesseract OCR + контекст + жирный ответ)
 import os, datetime
 from io import BytesIO
 import requests as req
@@ -56,7 +56,7 @@ async def solve_groq(prompt: str) -> str:
         completion = groq_client.chat.completions.create(
             model="llama-3.1-8b-instant",
             messages=[
-                {"role": "system", "content": "Ты — лучший решатель задач. Решай подробно, шаг за шагом, и выдавай окончательный ответ."},
+                {"role": "system", "content": "Ты — лучший решатель задач. Решай подробно, шаг за шагом. Окончательный ответ обязательно выдели жирным шрифтом, используя HTML теги: <b>Ответ: ...</b>."},
                 {"role": "user", "content": prompt}
             ],
             temperature=0.3,
@@ -143,9 +143,9 @@ async def solve_text(message: types.Message, state: FSMContext):
     for i in range(0, len(answer), 4000):
         chunk = answer[i:i+4000]
         if i == 0:
-            await msg.edit_text(chunk)
+            await msg.edit_text(chunk, parse_mode=ParseMode.HTML)
         else:
-            await message.answer(chunk)
+            await message.answer(chunk, parse_mode=ParseMode.HTML)
 
 @router.message(F.photo)
 async def handle_photo(message: types.Message):
@@ -171,9 +171,9 @@ async def handle_photo(message: types.Message):
         for i in range(0, len(answer), 4000):
             chunk = answer[i:i+4000]
             if i == 0:
-                await msg.edit_text(chunk)
+                await msg.edit_text(chunk, parse_mode=ParseMode.HTML)
             else:
-                await message.answer(chunk)
+                await message.answer(chunk, parse_mode=ParseMode.HTML)
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка обработки фото: {e}")
 
