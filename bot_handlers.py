@@ -1,4 +1,4 @@
-# bot_handlers.py (Groq + Tesseract OCR + контекст + гарантированно жирный ответ)
+# bot_handlers.py (Groq + Tesseract OCR + контекст + гарантированно жирный ответ + красивый профиль)
 import os, datetime
 from io import BytesIO
 import requests as req
@@ -64,15 +64,13 @@ async def solve_groq(prompt: str) -> str:
         )
         answer = completion.choices[0].message.content
 
-        # Если Groq вдруг забыл тег <b>, добавляем его принудительно
+        # Если Groq забыл тег <b>, добавляем принудительно
         if "<b>" not in answer and "Ответ" in answer:
             last_ans = answer.rfind("Ответ")
             if last_ans != -1:
-                # Находим конец строки с ответом
                 end = answer.find("\n", last_ans)
                 if end == -1:
                     end = len(answer)
-                # Оборачиваем в <b>
                 answer = answer[:last_ans] + "<b>" + answer[last_ans:end] + "</b>" + answer[end:]
 
         return answer
@@ -129,9 +127,13 @@ async def profile(message: types.Message):
     today = datetime.date.today()
     info = user_requests.get(uid, {"date": today, "count": 0})
     used = info["count"] if info["date"] == today else 0
+    remaining = "∞" if is_vip(uid) else str(FREE_REQUESTS_PER_DAY - used)
     await message.answer(
-        f"👤 Статус: {vip_status}\n"
-        f"📆 Сегодня решено: {used}/{FREE_REQUESTS_PER_DAY}"
+        "<b>Твой профиль</b>\n"
+        f"▸ Статус: {vip_status}\n"
+        f"▸ Решено сегодня: {used}\n"
+        f"▸ Осталось бесплатно: {remaining}",
+        parse_mode=ParseMode.HTML
     )
 
 # Решатель текста с учётом контекста
@@ -143,7 +145,6 @@ async def solve_text(message: types.Message, state: FSMContext):
     prompt = message.text.strip()
     uid = message.from_user.id
 
-    # Если короткий вопрос или содержит '?', и есть сохранённая задача – добавляем контекст
     if uid in last_task and (len(prompt) < 40 or '?' in prompt):
         full_prompt = f"Задача: {last_task[uid]}\nУточняющий вопрос: {prompt}\nОтветь, учитывая условие задачи."
     else:
@@ -151,7 +152,6 @@ async def solve_text(message: types.Message, state: FSMContext):
 
     msg = await message.answer("🧠 Решаю...")
     answer = await solve_groq(full_prompt)
-    # Разбиваем длинный ответ
     for i in range(0, len(answer), 4000):
         chunk = answer[i:i+4000]
         if i == 0:
@@ -175,7 +175,6 @@ async def handle_photo(message: types.Message):
             await msg.edit_text("❌ Не удалось распознать текст. Попробуй более чёткое фото или напиши вручную.")
             return
 
-        # Сохраняем последнюю задачу для контекста
         last_task[message.from_user.id] = text
 
         await msg.edit_text(f"📝 Распознано: {text[:200]}...\n🧠 Решаю...")
@@ -189,7 +188,7 @@ async def handle_photo(message: types.Message):
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка обработки фото: {e}")
 
-# --- Админ-панель (без изменений) ---
+# --- Админ-панель ---
 def admin_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
