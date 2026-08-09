@@ -1,38 +1,26 @@
-import os, requests, asyncio, base64, time
+import os, datetime
 from io import BytesIO
+import requests as req
 from aiogram import Router, types, F
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.enums import ParseMode
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile
-from config import FREE_LIMIT, ADMIN_ID
-from vip_manager import (
-    is_vip, add_vip, can_use_free, use_free,
-    load_vips, save_vips, load_free_usage
-)
+from config import BOT_TOKEN, ADMIN_ID, GEMINI_API_KEY, FREE_REQUESTS_PER_DAY, VIP_PRICE
+from vip_manager import is_vip, add_vip, can_use_free, use_free, load_vips, save_vips
 from payment import create_payment_url
 
-# Gemini (текст + картинки)
 from google import genai
-from google.genai.types import Part, GenerateContentConfig
-gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-TEXT_MODEL = "models/gemini-2.0-flash"
-IMAGE_MODEL = "models/nano-banana-pro-preview"   # качество 🔥
+from google.genai.types import Part
 
-# Stable Horde (запасной, если Gemini упал)
-HORDE_API = "https://stablehorde.net/api/v2/generate/sync"
-HORDE_MODEL = "stable_diffusion_xl"
+gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+MODEL = "models/gemini-2.0-flash"
 
 router = Router()
 base_webhook_url: str = None
 
-user_modes = {}
-MODES = {
-    "fast": {"name": "⚡ Быстрый", "temp": 0.3, "max_tokens": 200, "prompt": "Отвечай кратко и по делу."},
-    "expert": {"name": "🧠 Эксперт", "temp": 0.5, "max_tokens": 800, "prompt": "Отвечай развёрнуто, как эксперт."},
-    "creative": {"name": "🎨 Творческий", "temp": 1.0, "max_tokens": 600, "prompt": "Отвечай креативно, с воображением."}
-}
+user_requests = {}
 
 class AdminActions(StatesGroup):
     waiting_for_vip_id = State()
@@ -45,146 +33,161 @@ async def check_access(message: types.Message) -> bool:
     uid = message.from_user.id
     if is_vip(uid):
         return True
-    if can_use_free(uid):
-        use_free(uid)
+    today = datetime.date.today()
+    info = user_requests.get(uid, {"date": today, "count": 0})
+    if info["date"] != today:
+        info = {"date": today, "count": 0}
+        user_requests[uid] = info
+    if info["count"] < FREE_REQUESTS_PER_DAY:
+        info["count"] += 1
+        user_requests[uid] = info
         return True
     await message.answer(
-        f"🎨 Лимит бесплатных генераций исчерпан ({FREE_LIMIT} шт.).\nКупи вечный VIP за 350₽ — /buy",
+        f"📚 Дневной лимит исчерпан ({FREE_REQUESTS_PER_DAY} бесплатных решений).\n"
+        f"Купи VIP за {VIP_PRICE}₽ — /buy",
         parse_mode=ParseMode.HTML
     )
     return False
 
-def get_mode(user_id):
-    return user_modes.get(user_id, "fast")
-
-# ==================== ГЕНЕРАЦИЯ КАРТИНОК ====================
-async def generate_image_smart(prompt: str) -> bytes:
-    # 1. Nano Banana (основной)
+async def solve_math(prompt: str) -> str:
     try:
         response = gemini_client.models.generate_content(
-            model=IMAGE_MODEL,
-            contents=f"Создай высококачественное, детализированное изображение: {prompt}"
+            model=MODEL,
+            contents=f"Реши задачу подробно, по шагам, и дай окончательный ответ. Задача: {prompt}"
         )
-        for part in response.candidates[0].content.parts:
-            if part.inline_data and part.inline_data.mime_type.startswith("image/"):
-                return part.inline_data.data
-    except:
-        pass
+        return response.text
+    except Exception as e:
+        return f"❌ Ошибка при решении: {e}"
 
-    # 2. Stable Horde (запасной)
-    try:
-        payload = {
-            "prompt": f"{prompt}, highly detailed, cinematic",
-            "model": HORDE_MODEL,
-            "params": {"width": 1024, "height": 1024, "steps": 20}
-        }
-        resp = requests.post(HORDE_API, json=payload, timeout=60)
-        data = resp.json()
-        if "img" in data:
-            return base64.b64decode(data["img"])
-    except:
-        pass
-
-    raise Exception("Сервисы генерации временно недоступны. Попробуй через минуту.")
-
-# ==================== КОМАНДЫ ====================
+# ==================== СТАРТ ====================
 @router.message(Command("start"))
-async def cmd_start(message: types.Message):
+async def start(message: types.Message):
     await message.answer(
-        "☂️ <b>ixxy AI</b> 🤖\n"
-        "Nano Banana для картинок, Gemini для текста!\n\n"
-        "🎯 Команды:\n"
-        "/mode — выбрать режим (Быстрый/Эксперт/Творческий)\n"
-        "/ask вопрос — спросить\n"
-        "/gen запрос — картинка\n"
-        "/buy — купить VIP\n\n"
-        f"🆓 Бесплатно: {FREE_LIMIT} картинок, текст безлимит",
+        "📚 <b>ixxy AI ГДЗ</b> 🤖\n"
+        "Просто напиши задачу текстом или пришли фото — я решу!\n\n"
+        f"🆓 Бесплатно: {FREE_REQUESTS_PER_DAY} задач в день\n"
+        f"💎 VIP ({VIP_PRICE}₽ навсегда): безлимит\n\n"
+        "🎯 Как пользоваться:\n"
+        "• Отправь текстовое сообщение с задачей\n"
+        "• Отправь фото (можно с подписью)\n\n"
+        "📋 Другие команды:\n"
+        "/buy — купить VIP\n"
+        "/profile — моя статистика\n"
+        "/admin — для администратора",
         parse_mode=ParseMode.HTML
     )
 
-@router.message(Command("mode"))
-async def choose_mode(message: types.Message):
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⚡ Быстрый", callback_data="mode_fast")],
-        [InlineKeyboardButton(text="🧠 Эксперт", callback_data="mode_expert")],
-        [InlineKeyboardButton(text="🎨 Творческий", callback_data="mode_creative")],
-    ])
-    current = get_mode(message.from_user.id)
-    await message.answer(f"Текущий режим: {MODES[current]['name']}\nВыбери новый:", reply_markup=kb)
-
-@router.callback_query(F.data.startswith("mode_"))
-async def set_mode(callback: types.CallbackQuery):
-    mode_key = callback.data.split("_", 1)[1]
-    user_modes[callback.from_user.id] = mode_key
-    await callback.message.edit_text(f"✅ Режим изменён на {MODES[mode_key]['name']}")
-    await callback.answer()
-
 @router.message(Command("buy"))
-async def cmd_buy(message: types.Message):
+async def buy(message: types.Message):
     if not base_webhook_url:
-        await message.answer("⚠️ Ошибка конфигурации сервера.")
+        await message.answer("⚠️ Ошибка конфигурации.")
         return
     url = create_payment_url(message.from_user.id, base_webhook_url)
     if url:
         await message.answer(
-            f"💳 <b>VIP навсегда за 350₽</b>\n\n"
-            f"👉 <a href='{url}'>Оплатить через cashera.cash</a>\n\n"
-            "После оплаты бот пришлёт уведомление.",
+            f"💳 <b>VIP за {VIP_PRICE}₽</b>\n\n"
+            f"👉 <a href='{url}'>Оплатить через Cashera</a>\n\n"
+            "После оплаты бот активирует VIP.",
             parse_mode=ParseMode.HTML
         )
     else:
-        await message.answer("⚠️ Не удалось создать счёт. Попробуй позже.")
+        await message.answer("⚠️ Ошибка создания платежа.")
 
-@router.message(Command("ask"))
-async def cmd_ask(message: types.Message):
-    prompt = message.text.partition(" ")[2]
-    if not prompt:
-        await message.answer("Напиши вопрос: /ask что такое нейросеть")
-        return
+@router.message(Command("profile"))
+async def profile(message: types.Message):
+    uid = message.from_user.id
+    vip_status = "✅ VIP" if is_vip(uid) else "❌ Бесплатный"
+    today = datetime.date.today()
+    info = user_requests.get(uid, {"date": today, "count": 0})
+    used = info["count"] if info["date"] == today else 0
+    await message.answer(
+        f"👤 Статус: {vip_status}\n"
+        f"📆 Сегодня решено: {used}/{FREE_REQUESTS_PER_DAY}"
+    )
 
-    mode = MODES[get_mode(message.from_user.id)]
-    msg = await message.answer(f"🧠 {mode['name']} думает...")
-    try:
-        full_prompt = f"{mode['prompt']}\n\nПользователь: {prompt}"
-        response = gemini_client.models.generate_content(
-            model=TEXT_MODEL,
-            contents=full_prompt,
-            config=GenerateContentConfig(
-                temperature=mode['temp'],
-                max_output_tokens=mode['max_tokens']
-            )
-        )
-        answer = response.text
-        for i in range(0, len(answer), 4000):
-            chunk = answer[i:i+4000]
-            if i == 0:
-                await msg.edit_text(chunk)
-            else:
-                await message.answer(chunk)
-    except Exception as e:
-        await msg.edit_text(f"❌ Ошибка: {e}")
-
-@router.message(Command("gen"))
-async def cmd_generate(message: types.Message):
+# ==================== РЕШАТЕЛЬ ТЕКСТА ====================
+@router.message(F.text & ~F.text.startswith("/"))
+async def solve_text(message: types.Message):
     if not await check_access(message):
         return
-    prompt = message.text.partition(" ")[2]
-    if not prompt:
-        await message.answer("Напиши запрос: /gen киберпанк-кот")
-        return
+    prompt = message.text
+    msg = await message.answer("🧠 Решаю...")
+    answer = await solve_math(prompt)
+    await msg.edit_text(answer)
 
-    msg = await message.answer("🎨 Генерирую через Nano Banana...")
-    try:
-        img_bytes = await generate_image_smart(prompt)
-        await message.reply_photo(BufferedInputFile(img_bytes, filename="img.jpg"))
-        await msg.delete()
-    except Exception as e:
-        await msg.edit_text(f"❌ Ошибка: {e}")
-
-# Редактирование пока отключено (можно добавить через Gemini при необходимости)
+# ==================== РЕШАТЕЛЬ ФОТО ====================
 @router.message(F.photo)
 async def handle_photo(message: types.Message):
-    await message.answer("🛠 Редактирование фото временно недоступно. Используй /gen.")
+    if not await check_access(message):
+        return
+    file_id = message.photo[-1].file_id
+    file = await message.bot.get_file(file_id)
+    file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file.file_path}"
+    caption = message.caption or "Реши задачу на фото"
 
-# ==================== АДМИН-ПАНЕЛЬ (как раньше) ====================
-# ... вставь свою старую админку без изменений ...
+    msg = await message.answer("📷 Распознаю и решаю...")
+    try:
+        img_data = req.get(file_url).content
+        parts = [
+            Part.from_bytes(data=img_data, mime_type="image/jpeg"),
+            caption
+        ]
+        response = gemini_client.models.generate_content(
+            model=MODEL,
+            contents=parts
+        )
+        answer = response.text
+        await msg.edit_text(answer)
+    except Exception as e:
+        await msg.edit_text(f"❌ Ошибка обработки фото: {e}")
+
+# ==================== АДМИН-ПАНЕЛЬ ====================
+def admin_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
+        [InlineKeyboardButton(text="👑 Выдать VIP", callback_data="admin_give_vip")],
+        [InlineKeyboardButton(text="📋 Список VIP", callback_data="admin_list_vip")],
+    ])
+
+@router.message(Command("admin"))
+async def admin_panel(message: types.Message):
+    if not is_admin(message.from_user.id):
+        return
+    await message.answer("🛡 Админ-панель", reply_markup=admin_keyboard())
+
+@router.callback_query(F.data == "admin_stats")
+async def admin_stats(callback: types.CallbackQuery):
+    vips = load_vips()
+    text = f"📊 VIP: {len(vips)}\n👥 Сегодня пользователей: {len(user_requests)}"
+    await callback.message.edit_text(text)
+    await callback.answer()
+
+@router.callback_query(F.data == "admin_give_vip")
+async def admin_give_vip_start(callback: types.CallbackQuery, state: FSMContext):
+    await state.set_state(AdminActions.waiting_for_vip_id)
+    await callback.message.edit_text("➕ Введите ID пользователя:")
+    await callback.answer()
+
+@router.message(StateFilter(AdminActions.waiting_for_vip_id))
+async def process_give_vip(message: types.Message, state: FSMContext):
+    if not message.text.isdigit():
+        await message.answer("❌ Введите число.")
+        return
+    uid = int(message.text)
+    if is_vip(uid):
+        await message.answer("Уже VIP.")
+    else:
+        add_vip(uid)
+        await message.answer(f"✅ {uid} стал VIP!")
+        try:
+            await message.bot.send_message(uid, "🎉 VIP активирован навсегда!")
+        except:
+            pass
+    await state.clear()
+
+@router.callback_query(F.data == "admin_list_vip")
+async def list_vip(callback: types.CallbackQuery):
+    vips = load_vips()
+    text = "👑 VIP:\n" + "\n".join(f"• {v}" for v in vips) if vips else "нет"
+    await callback.message.edit_text(text)
+    await callback.answer()
