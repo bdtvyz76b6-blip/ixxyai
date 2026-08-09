@@ -1,4 +1,4 @@
-# bot_handlers.py (Groq + Tesseract OCR + контекст + гарантированно жирный ответ + красивый профиль + скрытая админка)
+# bot_handlers.py (Groq + Tesseract OCR + контекст + структурированный вывод без каши)
 import os, datetime
 from io import BytesIO
 import requests as req
@@ -52,30 +52,38 @@ async def check_access(message: types.Message) -> bool:
     return False
 
 async def solve_groq(prompt: str) -> str:
+    """Возвращает структурированный ответ без HTML‑тегов, с чёткими шагами."""
     try:
         completion = groq_client.chat.completions.create(
             model="llama-3.1-8b-instant",
             messages=[
-                {"role": "system", "content": "Ты — решатель задач. Решай подробно, шаг за шагом. В конце обязательно напиши окончательный ответ ровно в формате: <b>Ответ: ...</b>. Используй HTML тег <b> для выделения."},
+                {
+                    "role": "system",
+                    "content": (
+                        "Ты — решатель задач. Решай подробно, шаг за шагом, разделяя шаги пустой строкой. "
+                        "Не используй HTML‑теги. В самом конце обязательно напиши окончательный ответ "
+                        "ровно в таком формате на отдельной строке: Ответ: <сам ответ>"
+                    )
+                },
                 {"role": "user", "content": prompt}
             ],
             temperature=0.3,
             max_tokens=1000
         )
-        answer = completion.choices[0].message.content
-
-        # Если Groq забыл тег <b>, добавляем принудительно
-        if "<b>" not in answer and "Ответ" in answer:
-            last_ans = answer.rfind("Ответ")
-            if last_ans != -1:
-                end = answer.find("\n", last_ans)
-                if end == -1:
-                    end = len(answer)
-                answer = answer[:last_ans] + "<b>" + answer[last_ans:end] + "</b>" + answer[end:]
-
-        return answer
+        return completion.choices[0].message.content
     except Exception as e:
         return f"❌ Ошибка при решении: {e}"
+
+def split_response(answer: str):
+    """Разделяет ответ на основную часть и финальный ответ."""
+    # Ищем последнее вхождение строки, начинающейся с "Ответ:"
+    idx = answer.rfind("Ответ:")
+    if idx != -1:
+        main = answer[:idx].strip()
+        final = answer[idx:].strip()
+        return main, final
+    # Если нет "Ответ:", всё считаем основным
+    return answer.strip(), None
 
 def ocr_tesseract(image_bytes: bytes) -> str:
     """Распознаёт текст с изображения через Tesseract (без ключа)"""
@@ -100,7 +108,6 @@ async def start(message: types.Message):
         "/buy — купить VIP\n"
         "/profile — статистика"
     )
-    # Админ-панель видна только админу
     if is_admin(message.from_user.id):
         base_text += "\n/admin — админ-панель"
     await message.answer(base_text, parse_mode=ParseMode.HTML)
@@ -153,12 +160,25 @@ async def solve_text(message: types.Message, state: FSMContext):
 
     msg = await message.answer("🧠 Решаю...")
     answer = await solve_groq(full_prompt)
-    for i in range(0, len(answer), 4000):
-        chunk = answer[i:i+4000]
-        if i == 0:
-            await msg.edit_text(chunk, parse_mode=ParseMode.HTML)
-        else:
-            await message.answer(chunk, parse_mode=ParseMode.HTML)
+
+    main_text, final_answer = split_response(answer)
+    # Отправляем основную часть (переносы строк сохранятся, без HTML)
+    if main_text:
+        # Разбиваем длинные сообщения
+        for i in range(0, len(main_text), 4000):
+            chunk = main_text[i:i+4000]
+            if i == 0:
+                await msg.edit_text(chunk)
+            else:
+                await message.answer(chunk)
+    else:
+        await msg.delete()
+
+    # Отправляем финальный ответ жирным шрифтом
+    if final_answer:
+        # Удаляем префикс "Ответ:" если есть, чтобы не дублировать
+        # final_answer уже содержит "Ответ: ..."
+        await message.answer(f"<b>{final_answer}</b>", parse_mode=ParseMode.HTML)
 
 @router.message(F.photo)
 async def handle_photo(message: types.Message):
@@ -180,12 +200,20 @@ async def handle_photo(message: types.Message):
 
         await msg.edit_text(f"📝 Распознано: {text[:200]}...\n🧠 Решаю...")
         answer = await solve_groq(text)
-        for i in range(0, len(answer), 4000):
-            chunk = answer[i:i+4000]
-            if i == 0:
-                await msg.edit_text(chunk, parse_mode=ParseMode.HTML)
-            else:
-                await message.answer(chunk, parse_mode=ParseMode.HTML)
+
+        main_text, final_answer = split_response(answer)
+        if main_text:
+            for i in range(0, len(main_text), 4000):
+                chunk = main_text[i:i+4000]
+                if i == 0:
+                    await msg.edit_text(chunk)
+                else:
+                    await message.answer(chunk)
+        else:
+            await msg.delete()
+
+        if final_answer:
+            await message.answer(f"<b>{final_answer}</b>", parse_mode=ParseMode.HTML)
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка обработки фото: {e}")
 
