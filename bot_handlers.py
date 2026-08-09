@@ -1,3 +1,4 @@
+# bot_handlers.py (Groq + Tesseract OCR + контекст)
 import os, datetime
 from io import BytesIO
 import requests as req
@@ -21,6 +22,7 @@ router = Router()
 base_webhook_url: str = None
 
 user_requests = {}
+last_task = {}  # запоминаем последнюю задачу с фото
 
 class AdminActions(StatesGroup):
     waiting_for_vip_id = State()
@@ -68,7 +70,6 @@ def ocr_tesseract(image_bytes: bytes) -> str:
     """Распознаёт текст с изображения через Tesseract (без ключа)"""
     try:
         img = Image.open(BytesIO(image_bytes))
-        # Указываем языки: русский + английский
         text = pytesseract.image_to_string(img, lang='rus+eng')
         return text.strip()
     except:
@@ -81,7 +82,8 @@ async def start(message: types.Message):
         "Работаю на Groq + Tesseract OCR! Бесплатно и без лимитов.\n\n"
         "🎯 Как пользоваться:\n"
         "• Отправь текстовое сообщение с задачей\n"
-        "• Отправь фото с задачей — распознаю и решу!\n\n"
+        "• Отправь фото с задачей — распознаю и решу!\n"
+        "• После фото можно задать уточняющий вопрос\n\n"
         f"🆓 Бесплатно: {FREE_REQUESTS_PER_DAY} задач в день\n"
         f"💎 VIP ({VIP_PRICE}₽ навсегда): безлимит\n\n"
         "/buy — купить VIP\n"
@@ -119,17 +121,25 @@ async def profile(message: types.Message):
         f"📆 Сегодня решено: {used}/{FREE_REQUESTS_PER_DAY}"
     )
 
-@router.message(F.text & ~F.text.startswith("/"))
+# Решатель текста с учётом контекста
+@router.message(F.text & ~F.text.startswith("/"), StateFilter(None))
 async def solve_text(message: types.Message, state: FSMContext):
-    # Не решаем, если бот ждёт ввода от админа (например, ID для VIP)
-    current_state = await state.get_state()
-    if current_state is not None:
-        return  # просто игнорируем, не отвечаем
     if not await check_access(message):
         return
-    prompt = message.text
+
+    prompt = message.text.strip()
+    uid = message.from_user.id
+
+    # Если короткий вопрос или содержит '?', и есть сохранённая задача – добавляем контекст
+    if uid in last_task and (len(prompt) < 40 or '?' in prompt):
+        full_prompt = f"Задача: {last_task[uid]}\nУточняющий вопрос: {prompt}\nОтветь, учитывая условие задачи."
+        # Контекст оставляем до нового фото или длинного сообщения
+    else:
+        full_prompt = prompt
+
     msg = await message.answer("🧠 Решаю...")
-    answer = await solve_groq(prompt)
+    answer = await solve_groq(full_prompt)
+    # Разбиваем длинный ответ
     for i in range(0, len(answer), 4000):
         chunk = answer[i:i+4000]
         if i == 0:
@@ -152,6 +162,10 @@ async def handle_photo(message: types.Message):
         if not text:
             await msg.edit_text("❌ Не удалось распознать текст. Попробуй более чёткое фото или напиши вручную.")
             return
+
+        # Сохраняем последнюю задачу для контекста
+        last_task[message.from_user.id] = text
+
         await msg.edit_text(f"📝 Распознано: {text[:200]}...\n🧠 Решаю...")
         answer = await solve_groq(text)
         for i in range(0, len(answer), 4000):
@@ -163,6 +177,7 @@ async def handle_photo(message: types.Message):
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка обработки фото: {e}")
 
+# --- Админ-панель (без изменений) ---
 def admin_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
