@@ -7,3 +7,4 @@ Pillow
 google-genai
 openai
 groq
+pytesseract
