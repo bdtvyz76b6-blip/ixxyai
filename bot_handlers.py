@@ -1,4 +1,4 @@
-# bot_handlers.py (Groq + Tesseract OCR + контекст + жирный ответ)
+# bot_handlers.py (Groq + Tesseract OCR + контекст + гарантированно жирный ответ)
 import os, datetime
 from io import BytesIO
 import requests as req
@@ -56,13 +56,26 @@ async def solve_groq(prompt: str) -> str:
         completion = groq_client.chat.completions.create(
             model="llama-3.1-8b-instant",
             messages=[
-                {"role": "system", "content": "Ты — лучший решатель задач. Решай подробно, шаг за шагом. Окончательный ответ обязательно выдели жирным шрифтом, используя HTML теги: <b>Ответ: ...</b>."},
+                {"role": "system", "content": "Ты — решатель задач. Решай подробно, шаг за шагом. В конце обязательно напиши окончательный ответ ровно в формате: <b>Ответ: ...</b>. Используй HTML тег <b> для выделения."},
                 {"role": "user", "content": prompt}
             ],
             temperature=0.3,
             max_tokens=1000
         )
-        return completion.choices[0].message.content
+        answer = completion.choices[0].message.content
+
+        # Если Groq вдруг забыл тег <b>, добавляем его принудительно
+        if "<b>" not in answer and "Ответ" in answer:
+            last_ans = answer.rfind("Ответ")
+            if last_ans != -1:
+                # Находим конец строки с ответом
+                end = answer.find("\n", last_ans)
+                if end == -1:
+                    end = len(answer)
+                # Оборачиваем в <b>
+                answer = answer[:last_ans] + "<b>" + answer[last_ans:end] + "</b>" + answer[end:]
+
+        return answer
     except Exception as e:
         return f"❌ Ошибка при решении: {e}"
 
@@ -133,7 +146,6 @@ async def solve_text(message: types.Message, state: FSMContext):
     # Если короткий вопрос или содержит '?', и есть сохранённая задача – добавляем контекст
     if uid in last_task and (len(prompt) < 40 or '?' in prompt):
         full_prompt = f"Задача: {last_task[uid]}\nУточняющий вопрос: {prompt}\nОтветь, учитывая условие задачи."
-        # Контекст оставляем до нового фото или длинного сообщения
     else:
         full_prompt = prompt
 
