@@ -2,7 +2,7 @@ import os
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", 6312016802))
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 CASHERA_API_KEY = os.getenv("CASHERA_API_KEY")
 CASHERA_SHOP_ID = os.getenv("CASHERA_SHOP_ID", "")
 CASHERA_WEBHOOK_SECRET = os.getenv("CASHERA_WEBHOOK_SECRET", "")
